@@ -1,5 +1,6 @@
-//! `conductr` CLI: orchestrate, instance, schedule, tasks, setup, mail.
+//! `conductr` CLI: orchestrate, instance, schedule, tasks, setup, mail, local.
 
+mod local_detect;
 mod wiring;
 
 use std::path::PathBuf;
@@ -56,6 +57,8 @@ enum Cmd {
     Setup(SetupArgs),
     /// Agent mail: scope-dedup and synthesis bulletin board.
     Mail(MailArgs),
+    /// Local AI agent providers: detect installed runtimes and models.
+    Local(LocalArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -258,6 +261,7 @@ async fn main() -> Result<()> {
         Cmd::SaveState(a) => run_save_state(a).await,
         Cmd::Setup(a) => run_setup(a).await,
         Cmd::Mail(a) => run_mail(a).await,
+        Cmd::Local(a) => run_local(a).await,
     }
 }
 
@@ -984,6 +988,46 @@ async fn run_setup(args: SetupArgs) -> Result<()> {
             let repo = resolve_repo(repo)?;
             conductr_setup::fixes::install_claude_app(&repo, false)?;
         }
+    }
+    Ok(())
+}
+
+// ── Local ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Parser)]
+struct LocalArgs {
+    #[command(subcommand)]
+    cmd: LocalCmd,
+}
+
+#[derive(Debug, Subcommand)]
+enum LocalCmd {
+    /// Probe the host for local AI agent providers (ollama, llamacpp, models).
+    Detect(DetectArgs),
+}
+
+#[derive(Debug, Parser)]
+struct DetectArgs {
+    /// Emit machine-readable JSON instead of a table.
+    #[arg(long)]
+    json: bool,
+}
+
+async fn run_local(args: LocalArgs) -> Result<()> {
+    match args.cmd {
+        LocalCmd::Detect(a) => run_local_detect(a).await,
+    }
+}
+
+async fn run_local_detect(args: DetectArgs) -> Result<()> {
+    let rows = local_detect::run_all_probes().await;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    println!("{:<12}  {:<11}  {}", "PROVIDER", "STATUS", "DETAIL");
+    for row in &rows {
+        println!("{:<12}  {:<11}  {}", row.provider, row.status.as_str(), row.detail);
     }
     Ok(())
 }
