@@ -179,4 +179,10 @@ mod tests {
         let c = classify(&i, &BTreeSet::new(), &[], &triggered);
         assert_eq!(c.bucket, Bucket::TriggeredWaiting);
     }
+
+    #[test]
+    fn scope_overlap_variant_is_not_ready() {
+        let bucket = Bucket::ScopeOverlap { existing_message_id: "msg-1".into() };
+        assert_ne!(bucket, Bucket::Ready);
+    }
 }
