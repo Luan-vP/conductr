@@ -122,6 +122,7 @@ conductr tasks       list [--ready] | create <title> [-p N] | sync-to-notion --d
 conductr diagnose    [--pattern <substr>] [--all] [--json]
 conductr heal        [--pattern <substr>] [--all] [--dry-run] [--command <cmd>] [--json]
 conductr save-state  [--pattern <substr>] [--all] [--dry-run] [--no-restart] [--command <cmd>]
+conductr local       detect | setup [--provider <name>] [--dry-run]
 ```
 
 ### Pattern DSL
@@ -269,6 +270,52 @@ counts as `working` iff a spinner glyph (`✻ …`) appears below the most
 recent prompt; otherwise alive sessions are `idle`. Anything else (a shell
 prompt, the `[Process completed]` footer) is `crashed`.
 
+### Local providers
+
+`conductr local` manages local AI provider installations (ollama, llama.cpp, Pi agent) on the current host.
+
+#### Detect → setup loop
+
+```bash
+# 1. Check which providers are installed
+conductr local detect
+# PROVIDER     STATUS
+# ollama       missing
+# llamacpp     missing
+# pi           missing
+
+# 2. Preview what setup would do
+conductr local setup --provider ollama --dry-run
+# plan: would run /path/to/scripts/local/install-ollama-linux.sh
+
+# 3. Run the install
+conductr local setup --provider ollama
+# running: /path/to/scripts/local/install-ollama-linux.sh
+# ... (brew / curl install output)
+
+# 4. Pull the default model (qwen3 27B)
+bash scripts/local/pull-qwen3-27b.sh
+# Pulling qwen3:27b (approximately 16 GB)...
+
+# 5. Install all missing providers at once
+conductr local setup
+```
+
+#### Available providers
+
+| Provider | Binary checked | macOS script | Linux script |
+|----------|---------------|-------------|-------------|
+| `ollama` | `ollama` | Homebrew install + `ollama serve` | Official `curl \| sh` + systemd/background |
+| `llamacpp` | `llama-server` | Homebrew `llama.cpp` | Clone + cmake build → `~/.local/bin` |
+| `pi` | `pi` | placeholder (awaits #57) | placeholder (awaits #57) |
+
+All install scripts are **idempotent** — re-running them exits 0 if the target is already installed.
+
+#### Script location
+
+`conductr local setup` discovers `scripts/local/` by walking up from the current directory.
+Override with `CONDUCTR_SCRIPTS_DIR=/path/to/scripts/local`.
+
 ### Instance
 
 The `conductr-instance` crate currently exposes the trait surface
@@ -317,6 +364,8 @@ are appended after each successful orchestrate pass.
 ├── docs/
 ├── examples/
 │   └── conductor_life_day.pattern
+├── scripts/
+│   └── local/                       # idempotent provider install scripts (mac + linux)
 ├── skills/
 ├── crates/
 │   ├── conductr/                    # binary (driving adapter)
