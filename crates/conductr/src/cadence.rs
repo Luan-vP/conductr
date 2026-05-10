@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context, Result};
-use chrono::Utc;
+use chrono::{Timelike, Utc};
 use serde::{Deserialize, Serialize};
 
 const MARKER_PREFIX: &str = "# conductr-cron:";
@@ -161,6 +161,115 @@ pub fn status(repo_path: &Path) -> Result<String> {
     }
 
     Ok(lines.join("\n"))
+}
+
+/// Render the cadence schedule as a 24-hour staff with a `↓ HH:MM UTC` marker
+/// at the column for the current (or `--at`) UTC time.
+///
+/// Resolution: 1 column = 1 sixteenth note = 1 h (at q = 4 h, 6/4).
+/// Bars: 6 bar sections of 4 h each (one quarter-note beat per visual bar).
+pub fn show(repo_path: &Path, at: Option<chrono::DateTime<Utc>>) -> Result<String> {
+    let cfg = read_config(repo_path)?;
+    let now = at.unwrap_or_else(Utc::now);
+    Ok(render_show(&cfg.cadence, now))
+}
+
+/// Pure rendering of the cadence staff (no I/O). Exposed for tests.
+fn render_show(cadence: &BTreeMap<String, String>, now: chrono::DateTime<Utc>) -> String {
+    const HOURS_PER_BAR: usize = 4;
+    const NUM_BARS: usize = 6; // 6/4 time
+    const CELL_WIDTH: usize = 3; // chars per hour column
+
+    let tasks: Vec<(&str, Vec<bool>)> = cadence
+        .iter()
+        .map(|(name, cron)| (name.as_str(), firing_hours(cron)))
+        .collect();
+
+    let label_width = tasks.iter().map(|(n, _)| n.len()).max().unwrap_or(0) + 2;
+
+    // Round to nearest sixteenth-note column (= nearest hour).
+    let total_minutes = now.hour() * 60 + now.minute();
+    let current_col = ((total_minutes + 30) / 60 % 24) as usize;
+
+    let bar_horiz = "═".repeat(HOURS_PER_BAR * CELL_WIDTH);
+    let hline = |left: char, mid: char, right: char| -> String {
+        let mut s = " ".repeat(label_width);
+        s.push(left);
+        for i in 0..NUM_BARS {
+            s.push_str(&bar_horiz);
+            s.push(if i + 1 < NUM_BARS { mid } else { right });
+        }
+        s
+    };
+
+    let top_line = hline('╔', '╦', '╗');
+    let mid_line = hline('╠', '╬', '╣');
+    let bot_line = hline('╚', '╩', '╝');
+
+    // Position of ↓ within the output line (0-based character index).
+    // Each bar section in the task rows: ║ + HOURS_PER_BAR×CELL_WIDTH chars.
+    let bar_section_width = HOURS_PER_BAR * CELL_WIDTH + 1; // the leading ║ counts
+    let bar_idx = current_col / HOURS_PER_BAR;
+    let col_in_bar = current_col % HOURS_PER_BAR;
+    let arrow_pos = label_width + bar_idx * bar_section_width + 1 + col_in_bar * CELL_WIDTH;
+
+    let time_label = format!("↓ {:02}:{:02} UTC", now.hour(), now.minute());
+    let marker_line = format!("{}{}", " ".repeat(arrow_pos), time_label);
+
+    let mut out = String::new();
+    out.push_str(&marker_line);
+    out.push('\n');
+    out.push_str(&top_line);
+    out.push('\n');
+
+    for (i, (name, fires)) in tasks.iter().enumerate() {
+        if i > 0 {
+            out.push_str(&mid_line);
+            out.push('\n');
+        }
+        let mut row = format!("{:>label_width$}", name);
+        for bar_i in 0..NUM_BARS {
+            row.push('║');
+            for col_i in 0..HOURS_PER_BAR {
+                let hour = bar_i * HOURS_PER_BAR + col_i;
+                if fires[hour] {
+                    row.push_str("@' ");
+                } else {
+                    row.push_str("   ");
+                }
+            }
+        }
+        row.push('║');
+        out.push_str(&row);
+        out.push('\n');
+    }
+
+    out.push_str(&bot_line);
+    out.push('\n');
+
+    out
+}
+
+/// Return a 24-element bool vec indicating which hours a cron expression fires.
+/// Only the hour field is examined (minute/day/month/weekday are ignored for
+/// visual column resolution).
+fn firing_hours(cron: &str) -> Vec<bool> {
+    let mut fires = vec![false; 24];
+    let parts: Vec<&str> = cron.split_whitespace().collect();
+    if parts.len() != 5 {
+        return fires;
+    }
+    let hours: Vec<u32> = match expand_cron_field(parts[1], 0, 23) {
+        Ok(v) if v.is_empty() => (0..24).collect(), // wildcard = every hour
+        Ok(v) => v,
+        Err(_) => return fires,
+    };
+    for h in hours {
+        if (h as usize) < 24 {
+            fires[h as usize] = true;
+        }
+    }
+    fires
 }
 
 pub fn remove(repo_path: &Path, dry_run: bool) -> Result<String> {
@@ -856,5 +965,96 @@ mod tests {
         .unwrap();
         assert!(plist.contains("StartInterval"));
         assert!(!plist.contains("StartCalendarInterval"));
+    }
+
+    // ── firing_hours ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn firing_hours_every_two_hours() {
+        let fires = firing_hours("0 */2 * * *");
+        assert_eq!(fires.len(), 24);
+        for h in 0..24usize {
+            assert_eq!(fires[h], h % 2 == 0, "hour {h}");
+        }
+    }
+
+    #[test]
+    fn firing_hours_wildcard_fires_all() {
+        let fires = firing_hours("* * * * *");
+        assert!(fires.iter().all(|&f| f));
+    }
+
+    #[test]
+    fn firing_hours_specific_hour() {
+        let fires = firing_hours("0 8 * * *");
+        assert!(fires[8]);
+        let count = fires.iter().filter(|&&f| f).count();
+        assert_eq!(count, 1);
+    }
+
+    // ── render_show (column-position maths) ──────────────────────────────────
+
+    fn cadence_map(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+        entries.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn arrow_col(output: &str) -> usize {
+        output.lines().next().unwrap_or("").chars().take_while(|&c| c == ' ').count()
+    }
+
+    #[test]
+    fn show_marker_at_14_23() {
+        use chrono::TimeZone;
+        let cadence = cadence_map(&[("orchestrate", "0 */2 * * *")]);
+        let at = chrono::Utc.with_ymd_and_hms(2026, 5, 10, 14, 23, 0).unwrap();
+        let output = render_show(&cadence, at);
+
+        // First line must contain "↓ 14:23 UTC".
+        let first = output.lines().next().unwrap();
+        assert!(first.contains("↓ 14:23 UTC"), "got: {first:?}");
+
+        // Column 14: bar_idx=3, col_in_bar=2.
+        // label_width = "orchestrate".len() + 2 = 13
+        // bar_section_width = 4*3+1 = 13
+        // arrow_pos = 13 + 3*13 + 1 + 2*3 = 59
+        let label_width = "orchestrate".len() + 2;
+        let bsw = 4 * 3 + 1;
+        let expected = label_width + 3 * bsw + 1 + 2 * 3; // 59
+        assert_eq!(arrow_col(&output), expected, "↓ not at expected column");
+
+        // Task row: first bar starts with ║@'  (hour 0 fires for */2)
+        let task_line = output.lines().find(|l| l.contains("orchestrate")).unwrap();
+        let staff = &task_line[label_width..];
+        assert!(staff.starts_with("║@' "), "got: {staff:?}");
+    }
+
+    #[test]
+    fn show_marker_rounds_to_nearest_hour() {
+        use chrono::TimeZone;
+        let cadence = cadence_map(&[("orchestrate", "0 */4 * * *")]);
+        // 13:45 → (825+30)/60 = 14 → column 14 (same bar 3, col 2 as 14:xx)
+        let at = chrono::Utc.with_ymd_and_hms(2026, 5, 10, 13, 45, 0).unwrap();
+        let output = render_show(&cadence, at);
+        let first = output.lines().next().unwrap();
+        assert!(first.contains("↓ 13:45 UTC"), "got: {first:?}");
+        let label_width = "orchestrate".len() + 2;
+        let bsw = 4 * 3 + 1;
+        let expected = label_width + 3 * bsw + 1 + 2 * 3; // col 14
+        assert_eq!(arrow_col(&output), expected);
+    }
+
+    #[test]
+    fn show_multi_task_has_mid_barlines() {
+        use chrono::TimeZone;
+        let cadence = cadence_map(&[
+            ("orchestrate", "0 */2 * * *"),
+            ("sync", "0 8 * * *"),
+        ]);
+        let at = chrono::Utc.with_ymd_and_hms(2026, 5, 10, 0, 0, 0).unwrap();
+        let output = render_show(&cadence, at);
+        // Should contain mid-barline (╠) between the two task rows.
+        assert!(output.contains('╠'), "missing mid-barline");
+        assert!(output.contains("orchestrate"));
+        assert!(output.contains("sync"));
     }
 }
