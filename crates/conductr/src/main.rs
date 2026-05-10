@@ -116,6 +116,8 @@ enum CadenceCmd {
     Status(CadenceStatusArgs),
     /// Remove installed schedules recorded in `.conductr-local`.
     Remove(CadenceRemoveArgs),
+    /// Render the cadence schedule as a 24-hour staff with a current-time marker.
+    Show(CadenceShowArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -161,6 +163,16 @@ struct CadenceRemoveArgs {
     /// Print the planned removal without executing it.
     #[arg(long)]
     dry_run: bool,
+}
+
+#[derive(Debug, Parser)]
+struct CadenceShowArgs {
+    /// Path to the repo containing `.conductr` (defaults to current directory).
+    #[arg(long)]
+    repo: Option<PathBuf>,
+    /// Render as if it were this UTC instant (ISO-8601, e.g. `2026-05-10T14:23:00Z`).
+    #[arg(long)]
+    at: Option<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -1281,7 +1293,20 @@ fn run_cadence(args: CadenceArgs) -> Result<()> {
             println!("{report}");
             Ok(())
         }
+        CadenceCmd::Show(a) => {
+            let repo = a.repo.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let at = a.at.as_deref().map(parse_utc_datetime).transpose()?;
+            let report = cadence::show(&repo, at)?;
+            print!("{report}");
+            Ok(())
+        }
     }
+}
+
+fn parse_utc_datetime(s: &str) -> Result<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .with_context(|| format!("invalid --at value {s:?}: expected ISO-8601, e.g. 2026-05-10T14:23:00Z"))
 }
 
 fn run_local_setup(args: LocalSetupArgs) -> Result<()> {
