@@ -1,5 +1,7 @@
 //! `conductr` CLI: orchestrate, instance, schedule, tasks, setup, mail.
 
+mod wiring;
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -7,6 +9,7 @@ use clap::{Parser, Subcommand};
 use conductr_adapters::gh_cli::GhCli;
 use conductr_adapters::mail_fs::FsMailbox;
 use conductr_adapters::tmux::Tmux;
+use conductr_adapters::{beads::Beads, notion::Notion};
 use conductr_core::ports::{Mailbox, TmuxAgent};
 use conductr_core::types::MailKind;
 use conductr_mail::dedup::check_scope;
@@ -18,10 +21,9 @@ use conductr_pod::{
 };
 use conductr_schedule::{parse, parse_plan, pattern_to_dsl, plan_to_pattern, render_ascii};
 use conductr_setup::wizard::WizardMode;
-use conductr_adapters::beads::Beads;
-use conductr_adapters::notion::Notion;
 use conductr_tasks::sync::{create_task, list_tasks, sync_tasks};
 use serde::Serialize;
+use wiring::TrackerKind;
 
 #[derive(Debug, Parser)]
 #[command(name = "conductr", version, about = "Scheduling and orchestration for agents and people")]
@@ -190,7 +192,7 @@ struct SaveStateArgs {
     /// Cover every tmux session, not just the Claude pod.
     #[arg(long)]
     all: bool,
-    /// Print the plan without writing to beads or restarting sessions.
+    /// Print the plan without writing to the tracker or restarting sessions.
     #[arg(long)]
     dry_run: bool,
     /// Do not restart sessions after capturing state.
@@ -199,12 +201,19 @@ struct SaveStateArgs {
     /// Command typed into the pane to bring Claude back up after restart.
     #[arg(long, default_value = "claude")]
     command: String,
-    /// Priority for created beads issues (0-4).
+    /// Priority for created tracker issues (0-4).
     #[arg(long, default_value_t = 2)]
     priority: u8,
     /// Always emit the JSON manifest of saved state (default behaviour).
     #[arg(long, default_value_t = true)]
     json: bool,
+    /// Issue tracker to write recovery issues to.
+    #[arg(long, value_enum, default_value = "beads")]
+    tracker: TrackerKind,
+    /// Notion database ID for recovery issues (required with `--tracker notion`).
+    /// Can also be set via `CONDUCTR_NOTION_DATABASE`.
+    #[arg(long, env = "CONDUCTR_NOTION_DATABASE")]
+    notion_database: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -584,7 +593,7 @@ async fn run_heal(args: HealArgs) -> Result<()> {
 }
 
 /// One entry per session in the save-state manifest. The skill consumes this
-/// JSON to update Notion (or other external trackers) before restart.
+/// JSON to update external trackers before restart.
 #[derive(Debug, Serialize)]
 struct SaveStateEntry {
     session: String,
@@ -592,9 +601,11 @@ struct SaveStateEntry {
     cwd: Option<String>,
     last_message: Option<String>,
     tail: Vec<String>,
-    /// `br-…` id of the beads issue we created for this session (None if no
+    /// Which tracker wrote the recovery issue: `"beads"` or `"notion"`.
+    tracker: String,
+    /// ID of the tracker issue created for this session (None if no
     /// recoverable work or `--dry-run`).
-    beads_id: Option<String>,
+    tracker_id: Option<String>,
     /// What we did to the pane: `restarted`, `would-restart`, `skipped:<why>`.
     restart: String,
 }
@@ -604,16 +615,24 @@ async fn run_save_state(args: SaveStateArgs) -> Result<()> {
     let pattern = pod_pattern(args.pattern.as_deref(), args.all);
     let diagnoses = diagnose_all(&tmux, pattern).await?;
 
-    let beads = Beads::new();
+    let tracker_kind = args.tracker;
+    let tracker_label = tracker_kind.as_str().to_string();
+    // Only construct the tracker when we'll actually call it.
+    let tracker = if args.dry_run {
+        None
+    } else {
+        Some(wiring::issue_tracker(tracker_kind, args.notion_database)?)
+    };
+
     let mut manifest: Vec<SaveStateEntry> = Vec::with_capacity(diagnoses.len());
 
     for d in &diagnoses {
         let recoverable = recoverable_summary(d);
-        let beads_id = if let Some(summary) = &recoverable {
-            if args.dry_run {
-                None
+        let tracker_id = if let Some(summary) = &recoverable {
+            if let Some(t) = &tracker {
+                Some(create_recovery_issue(t.as_ref(), d, summary, args.priority).await?)
             } else {
-                Some(create_recovery_issue(&beads, d, summary, args.priority).await?)
+                None
             }
         } else {
             None
@@ -633,7 +652,8 @@ async fn run_save_state(args: SaveStateArgs) -> Result<()> {
             cwd: d.session.cwd.clone(),
             last_message: recoverable,
             tail: d.tail.clone(),
-            beads_id,
+            tracker: tracker_label.clone(),
+            tracker_id,
             restart,
         });
     }
@@ -674,7 +694,7 @@ fn health_label(h: &Health) -> &'static str {
 }
 
 async fn create_recovery_issue(
-    tracker: &impl conductr_core::ports::IssueTracker,
+    tracker: &dyn conductr_core::ports::IssueTracker,
     d: &Diagnosis,
     summary: &str,
     priority: u8,

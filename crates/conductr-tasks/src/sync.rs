@@ -2,7 +2,7 @@ use conductr_core::ports::{IssueTracker, IssueTrackerError};
 use conductr_core::types::{SyncReport, Task};
 
 pub async fn list_tasks(
-    src: &impl IssueTracker,
+    src: &(impl IssueTracker + ?Sized),
     ready_only: bool,
 ) -> Result<Vec<Task>, IssueTrackerError> {
     if ready_only {
@@ -13,7 +13,7 @@ pub async fn list_tasks(
 }
 
 pub async fn create_task(
-    src: &impl IssueTracker,
+    src: &(impl IssueTracker + ?Sized),
     title: &str,
     priority: Option<u8>,
     body: Option<&str>,
@@ -29,8 +29,8 @@ pub async fn create_task(
 /// adapter-specific types. The `dst` adapter must already be configured with
 /// the correct target (e.g. via `Notion::with_database`).
 pub async fn sync_tasks(
-    src: &impl IssueTracker,
-    dst: &impl IssueTracker,
+    src: &(impl IssueTracker + ?Sized),
+    dst: &(impl IssueTracker + ?Sized),
     _dst_database: Option<&str>,
 ) -> Result<SyncReport, IssueTrackerError> {
     let tasks = src.list().await?;

@@ -101,12 +101,11 @@ fn kind_tag(kind: &MailKind) -> &'static str {
     }
 }
 
-/// Extract JSON from a fenced code block like:
-/// ````
-/// ```conductr-mail
-/// { ... }
-/// ```
-/// ````
+// Extract JSON from a fenced code block like:
+//
+//     ```conductr-mail
+//     { ... }
+//     ```
 fn extract_mail_json(body: &str) -> Option<&str> {
     let start = body.find("```conductr-mail\n")?;
     let json_start = start + "```conductr-mail\n".len();
