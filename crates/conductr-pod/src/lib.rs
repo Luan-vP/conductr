@@ -10,10 +10,12 @@
 //! "alive" exactly when a user looking at it would see the Claude Code TUI.
 
 pub mod diagnose;
+pub mod free;
 pub mod heal;
 pub mod tmux;
 
 pub use conductr_core::types::*;
 pub use diagnose::{diagnose_all, diagnose_one};
+pub use free::{pick_idle, FreeOpts};
 pub use heal::{heal_all, HealOutcome, HealPlan};
 pub use tmux::Tmux;
