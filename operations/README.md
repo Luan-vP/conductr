@@ -13,6 +13,9 @@ described here.
   polling intervals, timeouts, when to re-classify, when to stop.
 - [`operations/`](./operations/) — **how** PRs flow. Review, merge, branch
   hygiene, dependency resolution, ARN convention, safety invariants.
+- [`idle.md`](./idle.md) — the peer of orchestrate. What the binary does
+  when no work is pressing: architecture scan, round-robin module review,
+  findings filed as issues for the next orchestrate pass.
 
 ## Reading order
 
