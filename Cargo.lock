@@ -212,6 +212,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "conductr-adapters",
  "conductr-core",
  "conductr-instance",
  "conductr-orchestrate",
@@ -260,13 +261,7 @@ dependencies = [
 name = "conductr-instance"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "async-trait",
  "conductr-core",
- "serde",
- "thiserror",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -328,9 +323,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "chrono",
+ "conductr-adapters",
  "conductr-core",
- "reqwest",
  "serde",
  "serde_json",
  "thiserror",
