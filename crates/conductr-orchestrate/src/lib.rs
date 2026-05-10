@@ -16,9 +16,9 @@ pub mod graph;
 pub mod orchestrator;
 pub mod types;
 
-pub use classifier::{classify, Bucket, Classification};
+pub use conductr_core::types::*;
+pub use classifier::classify;
 pub use deps::{parse_dependencies, DepRef};
 pub use github::{GhCli, GitHubClient};
-pub use graph::{topo_batches, DepGraph, GraphError};
-pub use orchestrator::{Orchestrator, OrchestratorConfig};
-pub use types::{Issue, IssueNumber, Pr, PrNumber, RepoSlug};
+pub use graph::topo_batches;
+pub use orchestrator::Orchestrator;

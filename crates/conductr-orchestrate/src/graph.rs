@@ -1,55 +1,10 @@
 //! Issue dependency graph: validation, cycle detection, batched topological sort.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::types::IssueNumber;
 
-#[derive(Debug, Clone, Default)]
-pub struct DepGraph {
-    /// Maps issue -> set of issues it depends on.
-    pub edges: BTreeMap<IssueNumber, BTreeSet<IssueNumber>>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum GraphError {
-    #[error("cycle detected involving issues: {0:?}")]
-    Cycle(Vec<IssueNumber>),
-    #[error("issue #{from} depends on #{to} which is not in the batch")]
-    DependencyOutsideBatch { from: IssueNumber, to: IssueNumber },
-}
-
-impl DepGraph {
-    pub fn new() -> Self { Self::default() }
-
-    pub fn add_issue(&mut self, issue: IssueNumber) {
-        self.edges.entry(issue).or_default();
-    }
-
-    pub fn add_dep(&mut self, from: IssueNumber, to: IssueNumber) {
-        self.edges.entry(from).or_default().insert(to);
-        self.edges.entry(to).or_default();
-    }
-
-    pub fn issues(&self) -> impl Iterator<Item = IssueNumber> + '_ {
-        self.edges.keys().copied()
-    }
-
-    pub fn deps_of(&self, issue: IssueNumber) -> Option<&BTreeSet<IssueNumber>> {
-        self.edges.get(&issue)
-    }
-
-    /// Validate that every dependency is also a node in the graph.
-    pub fn check_closed(&self) -> Result<(), GraphError> {
-        for (from, deps) in &self.edges {
-            for to in deps {
-                if !self.edges.contains_key(to) {
-                    return Err(GraphError::DependencyOutsideBatch { from: *from, to: *to });
-                }
-            }
-        }
-        Ok(())
-    }
-}
+pub use conductr_core::types::{DepGraph, GraphError};
 
 /// Kahn-style topological sort returning *batches* of nodes that can be run in parallel.
 ///
@@ -75,7 +30,7 @@ pub fn topo_batches(
     }
 
     let mut batches: Vec<Vec<IssueNumber>> = Vec::new();
-    let mut ready: VecDeque<IssueNumber> = indegree
+    let mut ready: std::collections::VecDeque<IssueNumber> = indegree
         .iter()
         .filter(|(_, &d)| d == 0)
         .map(|(n, _)| *n)
@@ -99,7 +54,7 @@ pub fn topo_batches(
                 }
                 let prior_indegree = *indegree.get(&node).unwrap_or(&0);
                 if prior_indegree == 0 {
-                    return None; // already emitted in an earlier batch
+                    return None;
                 }
                 let still_blocked = deps
                     .iter()
@@ -107,7 +62,6 @@ pub fn topo_batches(
                         !closed.contains(d)
                             && graph.edges.contains_key(d)
                             && !batch.contains(d)
-                            // also exclude any issue emitted in earlier batches
                             && !already_emitted(&batches, **d)
                     })
                     .count();
@@ -173,7 +127,6 @@ mod tests {
 
     #[test]
     fn closed_dep_is_satisfied() {
-        // Graph contains only the open issue #2; #1 is already closed and not a node.
         let mut g = DepGraph::new();
         g.add_issue(2);
         g.edges.entry(2).or_default().insert(1);
@@ -187,8 +140,6 @@ mod tests {
     fn dependency_outside_batch_is_flagged_by_check_closed() {
         let mut g = DepGraph::new();
         g.add_dep(2, 1);
-        // node 1 was not added explicitly with add_issue, but add_dep adds both nodes.
-        // remove 1 to simulate "outside batch":
         g.edges.remove(&1);
         assert!(g.check_closed().is_err());
     }

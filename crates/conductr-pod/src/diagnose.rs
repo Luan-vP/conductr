@@ -7,55 +7,10 @@
 //! agent has exited and the session has fallen back to the shell.
 
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
 
-use crate::tmux::{Tmux, TmuxError, TmuxSession};
+use conductr_core::types::{Diagnosis, Health, TmuxError, TmuxSession};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Health {
-    /// Claude Code is rendered and waiting at the input prompt.
-    Idle {
-        /// Most recent message visible above the prompt, if any.
-        last_message: Option<String>,
-        /// Token count if the status bar is showing one (`123.4k tokens`).
-        tokens: Option<String>,
-    },
-    /// Claude Code is rendered and actively processing (spinner / tool use).
-    Working {
-        /// One-line summary of what the spinner / status line says.
-        activity: String,
-    },
-    /// Pane shows a shell prompt and no Claude markers — the agent has exited.
-    Crashed {
-        /// Last shell line on screen, useful to see *why* it died.
-        last_shell_line: Option<String>,
-    },
-    /// Pane is blank or we couldn't classify it.
-    Unknown {
-        reason: String,
-    },
-}
-
-impl Health {
-    pub fn is_alive(&self) -> bool {
-        matches!(self, Health::Idle { .. } | Health::Working { .. })
-    }
-
-    pub fn needs_heal(&self) -> bool {
-        matches!(self, Health::Crashed { .. })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Diagnosis {
-    pub session: TmuxSession,
-    pub health: Health,
-    /// Seconds since the pane's last activity (per tmux).
-    pub idle_seconds: i64,
-    /// Last non-empty lines of the captured pane (most recent last).
-    pub tail: Vec<String>,
-}
+use crate::tmux::Tmux;
 
 /// Run a diagnose pass over all live tmux sessions.
 ///
@@ -130,8 +85,6 @@ fn classify(pane: &str) -> Health {
 }
 
 fn looks_like_claude_tui(pane: &str) -> bool {
-    // Any of these are strong evidence the Claude Code TUI is rendered. The
-    // banner art and bottom status line are the most reliable.
     const MARKERS: &[&str] = &[
         "Claude Code v",
         "▐▛███▜▌",
@@ -146,10 +99,6 @@ fn looks_like_claude_tui(pane: &str) -> bool {
 }
 
 fn working_activity(pane: &str) -> Option<String> {
-    // The TUI shows a spinner only while a turn is in flight, and it always
-    // renders *below* the most recent `❯` prompt. So: find the last `❯`
-    // prompt; if any spinner glyph appears after it (skipping the bottom
-    // status footer), the agent is working. Otherwise idle.
     let lines: Vec<&str> = pane.lines().collect();
     let last_prompt_idx = lines.iter().rposition(|l| l.trim_start().starts_with('❯'))?;
     for line in &lines[last_prompt_idx + 1..] {
@@ -165,7 +114,6 @@ fn working_activity(pane: &str) -> Option<String> {
 }
 
 fn is_status_footer(l: &str) -> bool {
-    // Lines that always render at the bottom regardless of agent state.
     l.contains("auto mode on")
         || l.contains("tokens")
         || l.contains("Auto-update")
@@ -174,10 +122,6 @@ fn is_status_footer(l: &str) -> bool {
 }
 
 fn last_user_or_assistant_message(pane: &str) -> Option<String> {
-    // Visible prompts look like `❯ message text`, but the TUI uses a
-    // non-breaking space (U+00A0) after the glyph rather than ASCII 0x20.
-    // We want the most recent prompt with non-empty content, ignoring the
-    // bare live prompt at the bottom.
     let mut found: Option<String> = None;
     for line in pane.lines() {
         let trimmed = line.trim_start();
@@ -192,13 +136,10 @@ fn last_user_or_assistant_message(pane: &str) -> Option<String> {
 }
 
 fn is_placeholder_hint(s: &str) -> bool {
-    // Claude renders dimmed `Try "..."` suggestions in the empty input box on
-    // fresh sessions. They sit on the prompt line but are not user input.
     s.starts_with("Try \"") && s.ends_with('"')
 }
 
 fn token_count(pane: &str) -> Option<String> {
-    // Look for something like "174.5k tokens" in the status footer.
     for line in pane.lines().rev() {
         if let Some(idx) = line.find("tokens") {
             let before = line[..idx].trim_end();
@@ -286,7 +227,6 @@ user@host:~/developer$
 
     #[test]
     fn handles_non_breaking_space_after_prompt_glyph() {
-        // The real Claude TUI uses U+00A0 (non-breaking space) after `❯`.
         let pane = "Claude Code v2\n▐▛███▜▌\n\n❯\u{00A0}try out the conductr\n  ⏵⏵ auto mode on (shift+tab to cycle)\n";
         match classify(pane) {
             Health::Idle { last_message, .. } => {

@@ -12,24 +12,4 @@ pub mod beads;
 pub mod notion;
 pub mod sync;
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Task {
-    pub id: String,
-    pub title: String,
-    pub status: TaskStatus,
-    pub priority: Option<u8>,
-    pub depends_on: Vec<String>,
-    pub tags: Vec<String>,
-    pub body: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum TaskStatus {
-    NotStarted,
-    InProgress,
-    Blocked,
-    Done,
-}
+pub use conductr_core::types::*;
