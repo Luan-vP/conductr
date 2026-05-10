@@ -111,6 +111,10 @@ Adapters are compiled only when their feature flag is set; use `--features full`
 to enable all of them at once. Full architecture details, port definitions, and
 the six design rules live in [`.claude/base.md`](.claude/base.md).
 
+The process doctrine that governs orchestration — the cadence of the loop,
+how PRs flow, how dependencies are resolved, the safety invariants — lives
+in [`operations/`](operations/).
+
 ## CLI
 
 ```text
@@ -364,6 +368,7 @@ are appended after each successful orchestrate pass.
 ├── docs/
 ├── examples/
 │   └── conductor_life_day.pattern
+├── operations/                      # process doctrine (cadence + PR ops)
 ├── scripts/
 │   └── local/                       # idempotent provider install scripts (mac + linux)
 ├── skills/
