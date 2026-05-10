@@ -2,9 +2,10 @@ use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 
+pub use crate::types::{InstanceError, TmuxError};
+
 use crate::types::{
-    InstanceError, InstanceHandle, InstanceSpec, Issue, IssueNumber, Pr, PrNumber, RepoSlug, Task,
-    TmuxError, TmuxSession,
+    InstanceHandle, InstanceSpec, Issue, IssueNumber, Pr, PrNumber, RepoSlug, Task, TmuxSession,
 };
 
 // ── IssueTracker ──────────────────────────────────────────────────────────────
@@ -19,6 +20,14 @@ pub enum IssueTrackerError {
     Parse(String),
     #[error("api: {0}")]
     Api(String),
+    #[error("backend: {0}")]
+    Backend(String),
+    #[error("configuration: {0}")]
+    Configuration(String),
+    #[error("not found: {0}")]
+    NotFound(String),
+    #[error("operation not supported by this tracker")]
+    Unsupported,
 }
 
 #[async_trait]
