@@ -17,6 +17,13 @@ human_assignee = "Luan-vP"
 # orchestrate: every 30 minutes.
 orchestrate = "*/30 * * * *"
 
+[local]
+# Default local AI agent provider for `conductr run-task`.
+# Precedence: --provider flag > CONDUCTR_LOCAL_PROVIDER env > this section > auto-detect.
+# Valid values: "ollama", "llamacpp", "pi"
+provider = "ollama"
+# model = "qwen3:27b"   # ollama only; omit to use the default (qwen3:27b)
+
 [tempo]
 # Completed orchestrate bars are appended here after each successful pass.
 # Format: { ts = "ISO-8601", merged = N, triggered = N }

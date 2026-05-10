@@ -1,6 +1,7 @@
 //! `conductr` CLI: orchestrate, instance, schedule, tasks, setup, mail, local, cadence.
 
 mod cadence;
+mod config;
 mod local_detect;
 mod wiring;
 
@@ -97,6 +98,8 @@ enum Cmd {
     Local(LocalArgs),
     /// Sync the host crontab from `.conductr [cadence]`.
     Cadence(CadenceArgs),
+    /// Dispatch a prompt to a local AI agent provider and print the response.
+    RunTask(RunTaskArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -323,6 +326,7 @@ async fn main() -> Result<()> {
         Cmd::Mail(a) => run_mail(a).await,
         Cmd::Local(a) => run_local(a).await,
         Cmd::Cadence(a) => run_cadence(a),
+        Cmd::RunTask(a) => run_run_task(a).await,
     }
 }
 
@@ -1281,6 +1285,115 @@ fn run_local_setup(args: LocalSetupArgs) -> Result<()> {
     Ok(())
 }
 
+// ── RunTask ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Parser)]
+struct RunTaskArgs {
+    /// Local agent provider to use.
+    ///
+    /// Provider precedence (highest to lowest):
+    ///   1. This flag
+    ///   2. CONDUCTR_LOCAL_PROVIDER env var
+    ///   3. `[local].provider` in `.conductr`
+    ///   4. Auto-pick the first `present` provider from `conductr local detect`
+    #[arg(long, value_enum)]
+    provider: Option<wiring::LocalAgentKind>,
+
+    /// Prompt text to send to the agent (mutually exclusive with --prompt-file).
+    #[arg(long, conflicts_with = "prompt_file")]
+    prompt: Option<String>,
+
+    /// Path to a file containing the prompt (mutually exclusive with --prompt).
+    #[arg(long, conflicts_with = "prompt")]
+    prompt_file: Option<PathBuf>,
+
+    /// Model name (ollama only). Overrides CONDUCTR_LOCAL_MODEL and `[local].model` in `.conductr`.
+    #[arg(long)]
+    model: Option<String>,
+}
+
+async fn run_run_task(args: RunTaskArgs) -> Result<()> {
+    let prompt = read_prompt_text(&args)?;
+    let (kind, config_model) = resolve_provider(args.provider).await?;
+    let model = args.model
+        .or_else(|| std::env::var("CONDUCTR_LOCAL_MODEL").ok())
+        .or(config_model);
+    let agent = wiring::local_agent(kind, model);
+    eprintln!("provider: {}", kind.as_str());
+    let response = agent
+        .complete(&prompt)
+        .await
+        .with_context(|| format!("calling {} agent", kind.as_str()))?;
+    println!("{response}");
+    Ok(())
+}
+
+fn read_prompt_text(args: &RunTaskArgs) -> Result<String> {
+    if let Some(text) = &args.prompt {
+        return Ok(text.clone());
+    }
+    if let Some(path) = &args.prompt_file {
+        return std::fs::read_to_string(path)
+            .with_context(|| format!("reading prompt file {}", path.display()));
+    }
+    anyhow::bail!("one of --prompt or --prompt-file is required")
+}
+
+/// Resolve the local-agent provider using the four-level precedence chain.
+async fn resolve_provider(
+    explicit: Option<wiring::LocalAgentKind>,
+) -> Result<(wiring::LocalAgentKind, Option<String>)> {
+    // 1. CLI flag
+    if let Some(kind) = explicit {
+        return Ok((kind, None));
+    }
+    // 2. Env var
+    if let Ok(val) = std::env::var("CONDUCTR_LOCAL_PROVIDER") {
+        let kind = wiring::LocalAgentKind::parse(&val).with_context(|| {
+            format!(
+                "CONDUCTR_LOCAL_PROVIDER='{val}' is not valid. \
+                 Use: ollama, llamacpp, or pi"
+            )
+        })?;
+        return Ok((kind, None));
+    }
+    // 3. .conductr [local] section
+    let cwd = std::env::current_dir().context("getting current directory")?;
+    let local_cfg = config::read_local_section(&cwd)?;
+    if let Some(provider_str) = local_cfg.provider {
+        let kind = wiring::LocalAgentKind::parse(&provider_str).with_context(|| {
+            format!(
+                "`[local].provider = '{provider_str}'` in .conductr is not valid. \
+                 Use: ollama, llamacpp, or pi"
+            )
+        })?;
+        return Ok((kind, local_cfg.model));
+    }
+    // 4. Auto-detect: first present provider from `conductr local detect`
+    eprintln!("no provider specified; running auto-detect…");
+    let probes = local_detect::run_all_probes().await;
+    let kind = pick_provider_from_probes(&probes).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no local provider detected. \
+             Run `conductr local detect` for details, \
+             or specify --provider / CONDUCTR_LOCAL_PROVIDER."
+        )
+    })?;
+    Ok((kind, None))
+}
+
+/// Return the first probe row that is `Present` and maps to a known `LocalAgentKind`.
+/// Skips rows whose provider name is not a valid kind (e.g. "qwen3:27b").
+fn pick_provider_from_probes(probes: &[local_detect::ProbeRow]) -> Option<wiring::LocalAgentKind> {
+    probes
+        .iter()
+        .filter(|r| r.status == local_detect::ProbeStatus::Present)
+        .filter_map(|r| wiring::LocalAgentKind::parse(r.provider))
+        .next()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -1400,5 +1513,68 @@ async fn run_tasks(args: TasksArgs) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use local_detect::{ProbeRow, ProbeStatus};
+
+    fn probe(provider: &'static str, status: ProbeStatus) -> ProbeRow {
+        ProbeRow { provider, status, detail: String::new() }
+    }
+
+    #[test]
+    fn pick_first_present_provider() {
+        let probes = vec![
+            probe("ollama", ProbeStatus::Missing),
+            probe("llamacpp", ProbeStatus::Present),
+            probe("qwen3:27b", ProbeStatus::Missing),
+        ];
+        let kind = pick_provider_from_probes(&probes);
+        assert_eq!(kind, Some(wiring::LocalAgentKind::LlamaCpp));
+    }
+
+    #[test]
+    fn pick_ollama_when_first_present() {
+        let probes = vec![
+            probe("ollama", ProbeStatus::Present),
+            probe("llamacpp", ProbeStatus::Present),
+        ];
+        let kind = pick_provider_from_probes(&probes);
+        assert_eq!(kind, Some(wiring::LocalAgentKind::Ollama));
+    }
+
+    #[test]
+    fn pick_returns_none_when_all_missing() {
+        let probes = vec![
+            probe("ollama", ProbeStatus::Missing),
+            probe("llamacpp", ProbeStatus::Missing),
+        ];
+        let kind = pick_provider_from_probes(&probes);
+        assert_eq!(kind, None);
+    }
+
+    #[test]
+    fn pick_skips_unknown_provider_names() {
+        let probes = vec![
+            probe("qwen3:27b", ProbeStatus::Present),
+            probe("llamacpp", ProbeStatus::Present),
+        ];
+        // "qwen3:27b" is not a valid LocalAgentKind; should skip to "llamacpp"
+        let kind = pick_provider_from_probes(&probes);
+        assert_eq!(kind, Some(wiring::LocalAgentKind::LlamaCpp));
+    }
+
+    #[tokio::test]
+    async fn resolve_provider_honours_explicit_flag() {
+        // When an explicit provider is given, it wins regardless of env/config.
+        let (kind, model) =
+            resolve_provider(Some(wiring::LocalAgentKind::Ollama)).await.unwrap();
+        assert_eq!(kind, wiring::LocalAgentKind::Ollama);
+        assert!(model.is_none());
     }
 }

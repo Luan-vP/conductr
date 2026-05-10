@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use conductr_core::ports::{
-    InstanceError, InstanceProvider, IssueTracker, IssueTrackerError, Mailbox, MailboxError,
-    ScmHost, TmuxAgent, TmuxError,
+    InstanceError, InstanceProvider, IssueTracker, IssueTrackerError, LocalAgent, LocalAgentError,
+    Mailbox, MailboxError, ScmHost, TmuxAgent, TmuxError,
 };
 use conductr_core::types::{
     CiStatus, InstanceHandle, InstanceSpec, Issue, IssueNumber, IssueState, MailKind, MailMessage,
@@ -439,6 +439,50 @@ fn kind_tag(kind: &MailKind) -> &'static str {
     }
 }
 
+// ── MockLocalAgent ────────────────────────────────────────────────────────────
+
+/// In-memory `LocalAgent` that returns a fixed response regardless of prompt.
+#[derive(Debug, Clone)]
+pub struct MockLocalAgent {
+    agent_name: &'static str,
+    response: String,
+}
+
+impl MockLocalAgent {
+    pub fn new(name: &'static str, response: impl Into<String>) -> Self {
+        Self { agent_name: name, response: response.into() }
+    }
+}
+
+#[async_trait]
+impl LocalAgent for MockLocalAgent {
+    async fn name(&self) -> &'static str {
+        self.agent_name
+    }
+
+    async fn complete(&self, _prompt: &str) -> Result<String, LocalAgentError> {
+        Ok(self.response.clone())
+    }
+}
+
+// ── PiStub ────────────────────────────────────────────────────────────────────
+
+/// Placeholder `LocalAgent` for the Pi provider.
+/// Returns `NotInstalled` on every call. Real implementation tracked in #57.
+#[derive(Debug, Default, Clone)]
+pub struct PiStub;
+
+#[async_trait]
+impl LocalAgent for PiStub {
+    async fn name(&self) -> &'static str {
+        "pi"
+    }
+
+    async fn complete(&self, _prompt: &str) -> Result<String, LocalAgentError> {
+        Err(LocalAgentError::NotInstalled)
+    }
+}
+
 // ── Builder helpers ───────────────────────────────────────────────────────────
 
 /// Convenience constructor for a simple open issue.
@@ -555,6 +599,22 @@ mod tests {
         ]);
         let issues = host.list_open_issues(&repo).await.unwrap();
         assert_eq!(issues.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn mock_local_agent_returns_fixed_response() {
+        let agent = MockLocalAgent::new("test", "hello world");
+        assert_eq!(agent.name().await, "test");
+        let resp = agent.complete("any prompt").await.unwrap();
+        assert_eq!(resp, "hello world");
+    }
+
+    #[tokio::test]
+    async fn pi_stub_returns_not_installed() {
+        let stub = PiStub;
+        assert_eq!(stub.name().await, "pi");
+        let err = stub.complete("hi").await.unwrap_err();
+        assert!(matches!(err, LocalAgentError::NotInstalled));
     }
 
     #[tokio::test]

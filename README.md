@@ -141,6 +141,7 @@ conductr diagnose    [--pattern <substr>] [--all] [--json]
 conductr heal        [--pattern <substr>] [--all] [--dry-run] [--command <cmd>] [--json]
 conductr save-state  [--pattern <substr>] [--all] [--dry-run] [--no-restart] [--command <cmd>]
 conductr local       detect | setup [--provider <name>] [--dry-run]
+conductr run-task    --prompt <text> | --prompt-file <path> [--provider <name>] [--model <name>]
 ```
 
 ### Pattern DSL
@@ -333,6 +334,41 @@ All install scripts are **idempotent** — re-running them exits 0 if the target
 
 `conductr local setup` discovers `scripts/local/` by walking up from the current directory.
 Override with `CONDUCTR_SCRIPTS_DIR=/path/to/scripts/local`.
+
+#### Running a task through a local provider
+
+```bash
+# Dispatch a prompt to ollama and print the response.
+conductr run-task --provider ollama --prompt "summarise the current git diff"
+
+# Use a prepared prompt file instead of inline text.
+conductr run-task --provider ollama --prompt-file .conductr/prompts/triage.md
+
+# Let conductr pick the provider automatically
+# (first present from `conductr local detect`).
+conductr run-task --prompt "say hi"
+
+# Override provider via environment variable.
+CONDUCTR_LOCAL_PROVIDER=llamacpp conductr run-task --prompt "say hi"
+
+# Specify a custom ollama model.
+conductr run-task --provider ollama --model llama3 --prompt "say hi"
+```
+
+Provider precedence (highest to lowest):
+
+1. `--provider` CLI flag
+2. `CONDUCTR_LOCAL_PROVIDER` environment variable
+3. `[local].provider` in `.conductr`
+4. First provider reported as `present` by `conductr local detect`
+
+Set a project-level default by adding a `[local]` section to `.conductr`:
+
+```toml
+[local]
+provider = "ollama"
+model    = "qwen3:27b"   # ollama only; defaults to qwen3:27b when omitted
+```
 
 ### Instance
 
