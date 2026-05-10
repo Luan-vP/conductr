@@ -19,7 +19,7 @@ tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
 
 conductr-core        = { workspace = true }
-conductr-adapters    = { workspace = true, features = ["mock"] }
+conductr-adapters    = { workspace = true, features = ["mock", "mail-fs"] }
 conductr-orchestrate = { workspace = true }
 conductr-instance    = { workspace = true }
 conductr-pod         = { workspace = true }
@@ -27,6 +27,5 @@ conductr-schedule    = { workspace = true }
 conductr-tasks       = { workspace = true }
 conductr-setup       = { workspace = true }
 conductr-mail        = { workspace = true }
-conductr-adapters    = { workspace = true, features = ["mail-fs"] }
 serde                = { workspace = true }
 chrono               = { workspace = true }

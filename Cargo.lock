@@ -212,8 +212,10 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "conductr-adapters",
  "conductr-core",
  "conductr-instance",
+ "conductr-mail",
  "conductr-orchestrate",
  "conductr-pod",
  "conductr-schedule",
@@ -260,13 +262,19 @@ dependencies = [
 name = "conductr-instance"
 version = "0.1.0"
 dependencies = [
+ "conductr-core",
+]
+
+[[package]]
+name = "conductr-mail"
+version = "0.1.0"
+dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
+ "conductr-adapters",
  "conductr-core",
- "serde",
- "thiserror",
  "tokio",
- "tracing",
 ]
 
 [[package]]
