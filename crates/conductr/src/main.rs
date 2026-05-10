@@ -855,6 +855,7 @@ async fn run_instance(args: InstanceArgs) -> Result<()> {
             );
         }
         InstanceCmd::List => {
+            let _provider = conductr_adapters::mock::MockInstanceProvider;
             println!("[]");
             Ok(())
         }
