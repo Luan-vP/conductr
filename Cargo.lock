@@ -221,6 +221,7 @@ dependencies = [
  "conductr-schedule",
  "conductr-setup",
  "conductr-tasks",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
