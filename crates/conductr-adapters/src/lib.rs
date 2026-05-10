@@ -21,3 +21,6 @@ pub mod mock;
 
 #[cfg(feature = "ollama")]
 pub mod ollama;
+
+#[cfg(feature = "llamacpp")]
+pub mod llamacpp;
