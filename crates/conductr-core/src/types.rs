@@ -169,7 +169,7 @@ pub enum CiStatus {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Bucket {
     Ready,
     PrOpen,
@@ -178,6 +178,7 @@ pub enum Bucket {
     TriggeredWaiting,
     Human,
     AlreadyClosed,
+    ScopeOverlap { existing_message_id: String },
 }
 
 #[derive(Debug, Clone)]
@@ -264,6 +265,7 @@ pub struct CycleReport {
     pub blocked: Vec<IssueNumber>,
     pub human: Vec<IssueNumber>,
     pub pr_failing: Vec<u64>,
+    pub scope_overlap: Vec<IssueNumber>,
     pub progress_made: bool,
 }
 
@@ -304,4 +306,46 @@ pub enum InstanceError {
     Ssh(String),
     #[error("provider error: {0}")]
     Provider(String),
+}
+
+// ── conductr-mail types ───────────────────────────────────────────────────────
+
+/// Opaque identifier for an agent (e.g. "claude/issue-16-…" branch name or session name).
+pub type AgentId = String;
+
+/// Opaque reference to a `MailMessage` (its unique id string).
+pub type MailRef = String;
+
+/// The kind of payload carried by a `MailMessage`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MailKind {
+    /// An agent claiming ownership of a set of files for a given issue.
+    ScopeClaim {
+        issue: IssueNumber,
+        files: Vec<String>,
+        summary: String,
+    },
+    /// A request for a synthesis agent to merge two or more PRs for one issue.
+    SynthesisRequest {
+        issue: IssueNumber,
+        pr_numbers: Vec<u64>,
+    },
+    /// A proposed merged solution produced by a synthesis agent.
+    SynthesisProposal {
+        issue: IssueNumber,
+        request_id: MailRef,
+        body: String,
+    },
+    /// An informational note from an agent (free-form).
+    Note { text: String },
+}
+
+/// A single message on the shared bulletin board.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MailMessage {
+    pub id: MailRef,
+    pub agent: AgentId,
+    pub sent_at: DateTime<Utc>,
+    pub payload: MailKind,
 }

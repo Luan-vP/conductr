@@ -11,12 +11,12 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use conductr_core::ports::{
-    InstanceError, InstanceProvider, IssueTracker, IssueTrackerError, ScmHost, TmuxAgent,
-    TmuxError,
+    InstanceError, InstanceProvider, IssueTracker, IssueTrackerError, Mailbox, MailboxError,
+    ScmHost, TmuxAgent, TmuxError,
 };
 use conductr_core::types::{
-    CiStatus, InstanceHandle, InstanceSpec, Issue, IssueNumber, IssueState, Pr, PrNumber, PrState,
-    Provider, RepoSlug, Task, TaskStatus, TmuxSession,
+    CiStatus, InstanceHandle, InstanceSpec, Issue, IssueNumber, IssueState, MailKind, MailMessage,
+    MailRef, Pr, PrNumber, PrState, Provider, RepoSlug, Task, TaskStatus, TmuxSession,
 };
 
 // ── MockTmuxAgent ─────────────────────────────────────────────────────────────
@@ -357,6 +357,76 @@ impl InstanceProvider for MockInstanceProvider {
 
     async fn tear_down(&self, _handle: &InstanceHandle) -> Result<(), InstanceError> {
         Ok(())
+    }
+}
+
+// ── MockMailbox ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Default, Clone)]
+pub struct MockMailbox {
+    messages: Arc<RwLock<Vec<MailMessage>>>,
+    counter: Arc<AtomicU64>,
+}
+
+impl MockMailbox {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// All messages currently in the mailbox.
+    pub fn all_messages(&self) -> Vec<MailMessage> {
+        self.messages.read().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl Mailbox for MockMailbox {
+    async fn send(&self, agent: &str, payload: MailKind) -> Result<MailRef, MailboxError> {
+        let id = format!("mock-msg-{}", self.counter.fetch_add(1, Ordering::SeqCst));
+        let msg = MailMessage {
+            id: id.clone(),
+            agent: agent.to_string(),
+            sent_at: Utc::now(),
+            payload,
+        };
+        self.messages.write().unwrap().push(msg);
+        Ok(id)
+    }
+
+    async fn inbox(
+        &self,
+        kind_filter: Option<&str>,
+        _since: Option<std::time::Duration>,
+    ) -> Result<Vec<MailMessage>, MailboxError> {
+        let all = self.messages.read().unwrap().clone();
+        if let Some(filter) = kind_filter {
+            Ok(all
+                .into_iter()
+                .filter(|m| kind_tag(&m.payload) == filter)
+                .collect())
+        } else {
+            Ok(all)
+        }
+    }
+
+    async fn thread(&self, thread_id: &MailRef) -> Result<Vec<MailMessage>, MailboxError> {
+        Ok(self
+            .messages
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|m| &m.id == thread_id)
+            .cloned()
+            .collect())
+    }
+}
+
+fn kind_tag(kind: &MailKind) -> &'static str {
+    match kind {
+        MailKind::ScopeClaim { .. } => "scope_claim",
+        MailKind::SynthesisRequest { .. } => "synthesis_request",
+        MailKind::SynthesisProposal { .. } => "synthesis_proposal",
+        MailKind::Note { .. } => "note",
     }
 }
 
