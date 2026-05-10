@@ -11,19 +11,48 @@ use conductr_tasks::beads::Beads;
 use serde::Serialize;
 
 const BANNER: &str = r#"
-       ╭───╮    ♩    ♪    ♫         ♩    ♪
-     ──┤   ├──●──●────────●─────●────────●──
-       │ G │           ●               ●
-     ──┤   ├────●───────────●──●────────────
-       │   │       ●                  ●
-     ──┤   ├──────────●─────────●──────────●
-       │   │   ●                ●
-     ──┤   ├──────●────●──────────────●─────
-       │   │
-     ──╰───╯─────────●──────●─●──────●──────
+       =IY;
+      XRVRRi
+     =Ri :RR
+     VR  ;RR
+     RY  tRY
+     RX ;RR;
+     tR=RRR
+     ;RRRR;
+     ;RRRi
+    ;RRRV
+   ;RRRRR:
+  :RRRV.RX
+  VRRR: ;R=
+ =RRR+   YRitti;.
+ VRRR  :YRRRRRRRRt.
+.RRRY ;RRYYR;;iRRRR.
+:RRRi RR; .Rt  .XRRY
+:RRR= RV   +R.  .RRR
+:RRRt tR    Rt   IRR.
+ RRRR  ;;   +R.  XRY
+ ;RRRt      .R+ +RR:
+  ;RRRX;     YRIRX:
+   .+RRRRIiitRRY;
+      :;+ii+;tR:
+             ;R:
+             iR
+    ;VRRi    Vi
+    RRRRR.  tR.
+    YRRR+ ;YV:
+    .tRRRRR+
+      .;;:
 
-                    c o n d u c t r
-        scheduling and orchestration for agents and people
+                     |\                         __3__          |
+____|\_______________|\\_______________|_______'__|__`___|_____|___|__________
+____|/___3_|________@'_\|__|_____|_____|___|___|__|__|___|_|__@'___|___|___|__
+___/|____-_|____________|__|_____|____@'___|__@'_@'_@'___|_|______@'___|___|__
+__|_/_\__4_|___|_______@'__|____O'_________|____________O'_|__________@'___|__
+___\|/_____|___|___________|_______________|_______________|_______________|__
+    /         O'
+
+                              c o n d u c t r
+                scheduling and orchestration for agents and people
 "#;
 
 #[derive(Debug, Parser)]
