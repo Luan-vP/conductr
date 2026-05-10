@@ -1,0 +1,20 @@
+[package]
+name = "conductr-idle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Background maintenance sweeps that keep a project ticking along"
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+conductr-tasks       = { workspace = true }
+conductr-orchestrate = { workspace = true }

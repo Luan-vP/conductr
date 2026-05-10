@@ -211,6 +211,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "conductr-idle",
  "conductr-instance",
  "conductr-orchestrate",
  "conductr-schedule",
@@ -219,6 +220,22 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "conductr-idle"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "conductr-orchestrate",
+ "conductr-tasks",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

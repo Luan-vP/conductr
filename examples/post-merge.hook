@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Sample git hook: run conductr's idle sweeps after a merge into the working tree.
+#
+# Install:
+#   cp examples/post-merge.hook .git/hooks/post-merge
+#   chmod +x .git/hooks/post-merge
+#
+# This runs read-only by default — it prints findings, doesn't file tickets.
+# Add `--sink beads` once `br init` has been run if you want auto-tickets.
+
+set -euo pipefail
+
+# Skip when not interactive (e.g. running inside CI) — the cron workflow
+# handles that case.
+if [[ -n "${CI:-}" ]]; then
+  exit 0
+fi
+
+if ! command -v conductr >/dev/null 2>&1; then
+  exit 0
+fi
+
+repo_slug="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
+args=(idle)
+if [[ -n "$repo_slug" ]]; then
+  args+=(--repo "$repo_slug")
+fi
+
+# Run quietly; surface findings only.
+conductr "${args[@]}" || true

@@ -1,0 +1,40 @@
+name: idle
+
+on:
+  schedule:
+    - cron: "17 * * * *"  # hourly, on :17 to spread load
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0       # need full history for git-flow checks
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install conductr
+        run: cargo install --path crates/conductr --locked
+      - name: Install cargo-audit (for security sweep)
+        run: cargo install cargo-audit --locked || true
+      - name: Run idle sweeps
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONDUCTR_SMOKE_WORKFLOW: smoke.yml
+        run: |
+          conductr idle \
+            --repo ${{ github.repository }} \
+            --develop develop \
+            --main main \
+            --json > idle-report.json
+          cat idle-report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: idle-report
+          path: idle-report.json

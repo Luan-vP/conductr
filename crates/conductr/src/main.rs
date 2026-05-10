@@ -4,6 +4,10 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::sync::Arc;
+
+use conductr_idle::sweeps::{GitFlowSweep, SecuritySweep, SmokeTestSweep};
+use conductr_idle::{BeadsSink, PrintSink, Runner, Shard, Sweep, SweepContext};
 use conductr_orchestrate::{GhCli, Orchestrator, OrchestratorConfig, RepoSlug};
 use conductr_schedule::{parse, render_ascii};
 use conductr_tasks::beads::Beads;
@@ -25,6 +29,40 @@ enum Cmd {
     Schedule(ScheduleArgs),
     /// Task tracking via beads (`br`) and Notion.
     Tasks(TasksArgs),
+    /// Run background maintenance sweeps (security, git-flow, smoke-tests).
+    /// Read-only by default; safe for cron and git hooks.
+    Idle(IdleArgs),
+}
+
+#[derive(Debug, Parser)]
+struct IdleArgs {
+    /// `owner/repo` slug. Optional; some sweeps need it to query GitHub.
+    #[arg(long)]
+    repo: Option<String>,
+    /// Long-lived development branch (git-flow).
+    #[arg(long, default_value = "develop")]
+    develop: String,
+    /// Mainline / production branch.
+    #[arg(long, default_value = "main")]
+    main: String,
+    /// Comma-separated list of sweeps to run. Default: all.
+    /// Choices: `security`, `git-flow`, `smoke-tests`.
+    #[arg(long)]
+    sweep: Option<String>,
+    /// Comma-separated sinks. Default: `print`.
+    /// Choices: `print`, `beads`.
+    #[arg(long, default_value = "print")]
+    sink: String,
+    /// Shard index (0-based) when coordinating across multiple instances.
+    #[arg(long)]
+    shard_index: Option<u32>,
+    /// Total number of shards. With `--shard-index k --shard-of n`, this
+    /// instance handles findings whose stable id hashes into slot k of n.
+    #[arg(long)]
+    shard_of: Option<u32>,
+    /// Print findings as JSON instead of human-readable text.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -113,7 +151,63 @@ async fn main() -> Result<()> {
         Cmd::Instance(a) => run_instance(a).await,
         Cmd::Schedule(a) => run_schedule(a),
         Cmd::Tasks(a) => run_tasks(a).await,
+        Cmd::Idle(a) => run_idle(a).await,
     }
+}
+
+async fn run_idle(args: IdleArgs) -> Result<()> {
+    let mut ctx = SweepContext::new(std::env::current_dir()?);
+    ctx.develop_branch = args.develop;
+    ctx.main_branch = args.main;
+    if let Some(slug) = args.repo {
+        let (owner, repo) = slug
+            .split_once('/')
+            .with_context(|| format!("invalid --repo `{slug}` (expected owner/repo)"))?;
+        ctx.repo_slug = Some(RepoSlug::new(owner, repo));
+    }
+
+    let names: Vec<String> = match &args.sweep {
+        Some(s) => s.split(',').map(|s| s.trim().to_string()).collect(),
+        None => vec!["security".into(), "git-flow".into(), "smoke-tests".into()],
+    };
+    let mut sweeps: Vec<Arc<dyn Sweep>> = Vec::new();
+    for n in &names {
+        match n.as_str() {
+            "security" => sweeps.push(Arc::new(SecuritySweep)),
+            "git-flow" => sweeps.push(Arc::new(GitFlowSweep)),
+            "smoke-tests" => sweeps.push(Arc::new(SmokeTestSweep)),
+            other => anyhow::bail!("unknown sweep `{other}`"),
+        }
+    }
+
+    let sink: Arc<dyn conductr_idle::Sink> = if args.sink == "print" {
+        Arc::new(PrintSink)
+    } else if args.sink == "beads" {
+        let sink = BeadsSink::new(Beads::new());
+        sink.warm().await.ok();
+        Arc::new(sink)
+    } else {
+        anyhow::bail!("unknown sink `{}`; supported: print, beads", args.sink);
+    };
+
+    let mut runner = Runner::new(sweeps, sink);
+    if let (Some(i), Some(of)) = (args.shard_index, args.shard_of) {
+        runner = runner.with_shard(Shard { index: i, of });
+    }
+
+    let report = runner.run(&ctx).await?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "\n{} finding(s); created {}, already-existed {}, errors {}.",
+            report.findings.len(),
+            report.created.len(),
+            report.already_existed.len(),
+            report.errors.len(),
+        );
+    }
+    Ok(())
 }
 
 async fn run_orchestrate(args: OrchestrateArgs) -> Result<()> {

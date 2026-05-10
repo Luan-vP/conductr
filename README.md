@@ -4,7 +4,7 @@ Scheduling and orchestration for agents and people.
 
 > *"Don't be a dictator, be a conductor."*
 
-A Rust workspace that bundles four concerns into one CLI:
+A Rust workspace that bundles five concerns into one CLI:
 
 | Crate                   | Concern                                                                 |
 |-------------------------|-------------------------------------------------------------------------|
@@ -13,6 +13,7 @@ A Rust workspace that bundles four concerns into one CLI:
 | `conductr-instance`     | Cloud instance spin-up & SSH (port of `agentic`; **stubbed**).          |
 | `conductr-schedule`     | Time patterns described in **musical notation** (the seed concept).     |
 | `conductr-tasks`        | Task tracking via [beads_rust] (`br`, local SQLite + JSONL) and Notion. |
+| `conductr-idle`         | Background maintenance sweeps that keep a project ticking along.        |
 
 [poorchestrator]: https://github.com/Luan-vP/poorchestrator
 [beads_rust]: https://github.com/Dicklesworthstone/beads_rust
@@ -53,6 +54,9 @@ conductr orchestrate --repo owner/repo [--dry-run] [--once] [--poll-secs 60]
 conductr instance    spin-up --name <name> | list
 conductr schedule    validate <pattern.txt> | render <pattern.txt>
 conductr tasks       list [--ready] | create <title> [-p N] | sync-to-notion --database <id>
+conductr idle        [--repo owner/repo] [--develop develop] [--main main]
+                     [--sweep security,git-flow,smoke-tests] [--sink print|beads]
+                     [--shard-index k --shard-of n] [--json]
 ```
 
 ### Pattern DSL
@@ -121,20 +125,88 @@ The `conductr-instance` crate currently exposes the trait surface
 and a `StubManager` that returns `NotImplemented`. The full provider impls
 will be ported once `vendor/agentic` is wired up.
 
+### Idle — background maintenance
+
+`conductr idle` is the home for **the kinds of work that keep a project
+ticking along** between active sessions. It's deliberately small,
+read-only by default, and idempotent so it's safe to wire into a cron
+job and a git hook.
+
+The intent is to capture maintenance — *not* feature work, *not*
+implementation. Concretely, the kinds of tasks that belong here are:
+
+- **Security sweeps.** Scan for known vulnerable dependencies
+  (`cargo audit`), surface secret-handling regressions, file a ticket per
+  issue so something tractable shows up in the task list rather than
+  emails or vague worry. Built-in: `SecuritySweep`.
+- **Git-flow branch maintenance.** Check that `develop` has all the
+  fixes that have landed on `main` (forward-integration gap), and flag
+  PRs targeting the wrong base branch. Built-in: `GitFlowSweep`.
+- **CI gap detection.** Find recent commits on `develop` that have no
+  recorded smoke-test run yet, so they can be re-run before becoming
+  the default state of the world. Built-in: `SmokeTestSweep`
+  (configure with `CONDUCTR_SMOKE_WORKFLOW`).
+
+Each sweep returns [`Finding`]s with a stable id. Findings flow through
+a [`Sink`]: by default they're printed (safe for cron logs); pass
+`--sink beads` to file each finding into your local `br` database,
+deduplicated by id so re-runs don't double-file.
+
+#### Wire it in
+
+A typical project uses both a cron-style schedule *and* a git hook:
+
+- **GitHub Actions cron** runs the sweep hourly. Template:
+  [`.github/workflows/idle.yml`](.github/workflows/idle.yml).
+- **`post-merge` git hook** runs the sweep after every merge into the
+  working tree, so findings surface immediately to the developer who
+  just pulled. Template: [`examples/post-merge.hook`](examples/post-merge.hook).
+  Install with:
+  ```bash
+  cp examples/post-merge.hook .git/hooks/post-merge
+  chmod +x .git/hooks/post-merge
+  ```
+
+#### Single instance, with a multi-instance escape hatch
+
+Conductr is designed to run on a single instance. That's enough for
+most projects. If RAM, latency, or **chord** size (the number of agents
+running concurrently) becomes a constraint, sweeps shard cleanly across
+instances:
+
+```bash
+# Instance A
+conductr idle --repo Luan-vP/myproj --shard-index 0 --shard-of 2
+# Instance B
+conductr idle --repo Luan-vP/myproj --shard-index 1 --shard-of 2
+```
+
+Each finding's stable id hashes into a slot; instance `k` of `n` only
+processes findings whose slot equals `k`. Sweeps remain independent and
+idempotent, so this is a deployment knob — not a code change — and
+there's no coordination protocol between instances to maintain.
+
+[`Finding`]: crates/conductr-idle/src/sweep.rs
+[`Sink`]: crates/conductr-idle/src/sink.rs
+
 ## Project layout
 
 ```text
 .
 ├── Cargo.toml                       # workspace root
 ├── README.md
+├── .github/workflows/
+│   └── idle.yml                     # cron: hourly idle sweeps
 ├── examples/
-│   └── conductor_life_day.pattern
+│   ├── conductor_life_day.pattern
+│   └── post-merge.hook              # git hook that runs `conductr idle`
 ├── crates/
 │   ├── conductr/                    # binary
 │   ├── conductr-orchestrate/
 │   ├── conductr-instance/
 │   ├── conductr-schedule/
-│   └── conductr-tasks/
+│   ├── conductr-tasks/
+│   └── conductr-idle/
 └── vendor/
     ├── poorchestrator/              # submodule
     └── beads_rust/                  # submodule

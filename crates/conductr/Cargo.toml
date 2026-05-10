@@ -22,3 +22,4 @@ conductr-orchestrate = { workspace = true }
 conductr-instance    = { workspace = true }
 conductr-schedule    = { workspace = true }
 conductr-tasks       = { workspace = true }
+conductr-idle        = { workspace = true }
