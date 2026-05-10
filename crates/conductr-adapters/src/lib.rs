@@ -24,3 +24,6 @@ pub mod ollama;
 
 #[cfg(feature = "llamacpp")]
 pub mod llamacpp;
+
+#[cfg(feature = "local-ci")]
+pub mod local_ci;

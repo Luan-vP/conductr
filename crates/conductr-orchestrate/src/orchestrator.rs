@@ -7,10 +7,8 @@ use tracing::{info, warn};
 
 use crate::classifier::{classify, Bucket, Classification};
 use crate::types::IssueNumber;
-use conductr_core::ports::ScmHost;
-
-use conductr_core::ports::Mailbox;
-use conductr_core::types::MailKind;
+use conductr_core::ports::{LocalCi, Mailbox, ScmHost};
+use conductr_core::types::{CiMode, CiStatus, MailKind, PrLocalCiResult, PrState};
 
 pub use conductr_core::types::{CycleReport, OrchestratorConfig};
 
@@ -18,17 +16,26 @@ pub struct Orchestrator<C: ScmHost> {
     pub client: C,
     pub config: OrchestratorConfig,
     mailbox: Option<Arc<dyn Mailbox>>,
+    local_ci: Option<Arc<dyn LocalCi>>,
 }
 
 impl<C: ScmHost> Orchestrator<C> {
     pub fn new(client: C, config: OrchestratorConfig) -> Self {
-        Self { client, config, mailbox: None }
+        Self { client, config, mailbox: None, local_ci: None }
     }
 
     /// Attach an optional mailbox for scope-dedup. When set, `run_cycle` will
     /// skip Ready issues that have an existing `ScopeClaim` overlap.
     pub fn with_mailbox(mut self, mailbox: Arc<dyn Mailbox>) -> Self {
         self.mailbox = Some(mailbox);
+        self
+    }
+
+    /// Attach a local CI runner. When set, `run_cycle` resolves each open PR's
+    /// `ci` status using local commands before classifying, according to
+    /// `config.ci_mode`.
+    pub fn with_local_ci(mut self, local_ci: Arc<dyn LocalCi>) -> Self {
+        self.local_ci = Some(local_ci);
         self
     }
 
@@ -56,7 +63,32 @@ impl<C: ScmHost> Orchestrator<C> {
 
         let open_issues = self.client.list_open_issues(repo).await?;
         let closed = self.client.list_closed_issue_numbers(repo).await?;
-        let prs = self.client.list_open_prs(repo).await?;
+        let mut prs = self.client.list_open_prs(repo).await?;
+
+        // Run local CI and resolve CiStatus for each open PR.
+        let mut local_ci_results: Vec<PrLocalCiResult> = Vec::new();
+        if let Some(local_ci) = &self.local_ci {
+            for pr in &mut prs {
+                if pr.state != PrState::Open {
+                    continue;
+                }
+                match local_ci.run(&pr.head_ref).await {
+                    Ok(report) => {
+                        let resolved =
+                            resolve_ci_mode(self.config.ci_mode, report.status, pr.ci);
+                        local_ci_results.push(PrLocalCiResult {
+                            pr: pr.number,
+                            status: report.status,
+                            commands: report.commands,
+                        });
+                        pr.ci = resolved;
+                    }
+                    Err(e) => {
+                        warn!(pr = pr.number, error = %e, "local CI error; keeping GitHub status");
+                    }
+                }
+            }
+        }
 
         let mut triggered: BTreeSet<IssueNumber> = BTreeSet::new();
         for issue in &open_issues {
@@ -71,7 +103,7 @@ impl<C: ScmHost> Orchestrator<C> {
             .map(|i| classify(i, &closed, &prs, &triggered))
             .collect();
 
-        let mut report = CycleReport::default();
+        let mut report = CycleReport { local_ci: local_ci_results, ..CycleReport::default() };
 
         // 1) Merge any PRs that are passing CI.
         for c in &classifications {
@@ -167,6 +199,24 @@ impl<C: ScmHost> Orchestrator<C> {
             tokio::time::sleep(self.config.poll_interval).await;
         }
         Ok(history)
+    }
+}
+
+fn resolve_ci_mode(mode: CiMode, local: CiStatus, github: CiStatus) -> CiStatus {
+    match mode {
+        CiMode::Local => match local {
+            CiStatus::Unknown => CiStatus::Failing,
+            other => other,
+        },
+        CiMode::PreferLocal => match local {
+            CiStatus::Unknown => github,
+            other => other,
+        },
+        CiMode::PreferGithub => match github {
+            CiStatus::Passing | CiStatus::Failing => github,
+            _ => local,
+        },
+        CiMode::Github => github,
     }
 }
 
@@ -330,5 +380,67 @@ mod tests {
         let report = orch.run_cycle().await.unwrap();
         assert_eq!(report.triggered, vec![1]);
         assert!(report.scope_overlap.is_empty());
+    }
+
+    #[test]
+    fn prefer_local_passes_through_local_status() {
+        use conductr_core::types::CiMode;
+        assert_eq!(
+            resolve_ci_mode(CiMode::PreferLocal, CiStatus::Passing, CiStatus::Failing),
+            CiStatus::Passing
+        );
+        assert_eq!(
+            resolve_ci_mode(CiMode::PreferLocal, CiStatus::Failing, CiStatus::Passing),
+            CiStatus::Failing
+        );
+    }
+
+    #[test]
+    fn prefer_local_falls_back_to_github_on_unknown() {
+        use conductr_core::types::CiMode;
+        assert_eq!(
+            resolve_ci_mode(CiMode::PreferLocal, CiStatus::Unknown, CiStatus::Passing),
+            CiStatus::Passing
+        );
+        assert_eq!(
+            resolve_ci_mode(CiMode::PreferLocal, CiStatus::Unknown, CiStatus::Pending),
+            CiStatus::Pending
+        );
+    }
+
+    #[test]
+    fn local_mode_fails_on_unknown() {
+        use conductr_core::types::CiMode;
+        assert_eq!(
+            resolve_ci_mode(CiMode::Local, CiStatus::Unknown, CiStatus::Passing),
+            CiStatus::Failing
+        );
+    }
+
+    #[test]
+    fn prefer_github_uses_github_when_conclusive() {
+        use conductr_core::types::CiMode;
+        assert_eq!(
+            resolve_ci_mode(CiMode::PreferGithub, CiStatus::Passing, CiStatus::Passing),
+            CiStatus::Passing
+        );
+        assert_eq!(
+            resolve_ci_mode(CiMode::PreferGithub, CiStatus::Failing, CiStatus::Failing),
+            CiStatus::Failing
+        );
+        // GitHub pending → fall back to local
+        assert_eq!(
+            resolve_ci_mode(CiMode::PreferGithub, CiStatus::Passing, CiStatus::Pending),
+            CiStatus::Passing
+        );
+    }
+
+    #[test]
+    fn github_mode_ignores_local() {
+        use conductr_core::types::CiMode;
+        assert_eq!(
+            resolve_ci_mode(CiMode::Github, CiStatus::Failing, CiStatus::Passing),
+            CiStatus::Passing
+        );
     }
 }

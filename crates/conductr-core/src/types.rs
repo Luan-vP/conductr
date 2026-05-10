@@ -248,6 +248,9 @@ pub struct OrchestratorConfig {
     pub max_cycles: Option<u32>,
     pub default_human_assignee: Option<String>,
     pub dry_run: bool,
+    /// How to resolve local vs GitHub CI status when a `LocalCi` adapter is
+    /// attached. Ignored when no adapter is wired in.
+    pub ci_mode: CiMode,
 }
 
 impl OrchestratorConfig {
@@ -259,8 +262,56 @@ impl OrchestratorConfig {
             max_cycles: None,
             default_human_assignee: None,
             dry_run: false,
+            ci_mode: CiMode::PreferLocal,
         }
     }
+}
+
+// ── local-ci types ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum CiMode {
+    Local,
+    #[default]
+    PreferLocal,
+    PreferGithub,
+    Github,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalCiConfig {
+    pub commands: Vec<String>,
+    pub timeout_secs: u64,
+    pub mode: CiMode,
+}
+
+impl Default for LocalCiConfig {
+    fn default() -> Self {
+        Self { commands: Vec::new(), timeout_secs: 900, mode: CiMode::PreferLocal }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandRun {
+    pub cmd: String,
+    pub exit: i32,
+    pub stdout_tail: String,
+    pub stderr_tail: String,
+    pub duration_secs: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalCiReport {
+    pub status: CiStatus,
+    pub commands: Vec<CommandRun>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrLocalCiResult {
+    pub pr: PrNumber,
+    pub status: CiStatus,
+    pub commands: Vec<CommandRun>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -273,6 +324,7 @@ pub struct CycleReport {
     pub pr_failing: Vec<u64>,
     pub scope_overlap: Vec<IssueNumber>,
     pub progress_made: bool,
+    pub local_ci: Vec<PrLocalCiResult>,
 }
 
 // ── conductr-instance types ───────────────────────────────────────────────────

@@ -5,8 +5,8 @@ use async_trait::async_trait;
 pub use crate::types::{InstanceError, LocalAgentError, TmuxError};
 
 use crate::types::{
-    InstanceHandle, InstanceSpec, Issue, IssueNumber, MailKind, MailMessage, MailRef, Pr, PrNumber,
-    RepoSlug, Task, TmuxSession,
+    InstanceHandle, InstanceSpec, Issue, IssueNumber, LocalCiReport, MailKind, MailMessage,
+    MailRef, Pr, PrNumber, RepoSlug, Task, TmuxSession,
 };
 
 // ── IssueTracker ──────────────────────────────────────────────────────────────
@@ -116,6 +116,26 @@ pub enum MailboxError {
     #[error("backend: {0}")]
     Backend(String),
 }
+
+// ── LocalCi ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, thiserror::Error)]
+pub enum LocalCiError {
+    #[error("io: {0}")]
+    Io(String),
+    #[error("git: {0}")]
+    Git(String),
+}
+
+/// Runs a project-defined command list against a PR branch HEAD and returns a
+/// `LocalCiReport`. The repo root and command configuration are held by the
+/// adapter; `head_ref` is the remote branch name (e.g. `claude/issue-1-foo`).
+#[async_trait]
+pub trait LocalCi: Send + Sync {
+    async fn run(&self, head_ref: &str) -> anyhow::Result<LocalCiReport>;
+}
+
+// ── Mailbox ───────────────────────────────────────────────────────────────────
 
 /// Shared bulletin board used by agents to claim scope and request synthesis.
 ///

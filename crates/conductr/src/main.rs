@@ -10,11 +10,12 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use conductr_adapters::gh_cli::GhCli;
+use conductr_adapters::local_ci::LocalCiAdapter;
 use conductr_adapters::mail_fs::FsMailbox;
 use conductr_adapters::tmux::Tmux;
 use conductr_adapters::{beads::Beads, notion::Notion};
-use conductr_core::ports::{Mailbox, TmuxAgent};
-use conductr_core::types::MailKind;
+use conductr_core::ports::{LocalCi, Mailbox, TmuxAgent};
+use conductr_core::types::{CiMode, LocalCiConfig, MailKind};
 use conductr_mail::dedup::check_scope;
 use conductr_mail::synthesise::request_synthesis;
 use conductr_orchestrate::{Orchestrator, OrchestratorConfig, RepoSlug};
@@ -182,6 +183,26 @@ struct BeginArgs {
     dry_run: bool,
 }
 
+/// CI mode override — maps to `conductr_core::types::CiMode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum CiModeArg {
+    Local,
+    PreferLocal,
+    PreferGithub,
+    Github,
+}
+
+impl From<CiModeArg> for CiMode {
+    fn from(m: CiModeArg) -> Self {
+        match m {
+            CiModeArg::Local => CiMode::Local,
+            CiModeArg::PreferLocal => CiMode::PreferLocal,
+            CiModeArg::PreferGithub => CiMode::PreferGithub,
+            CiModeArg::Github => CiMode::Github,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 struct OrchestrateArgs {
     /// `owner/repo` slug.
@@ -199,6 +220,12 @@ struct OrchestrateArgs {
     /// Default human assignee when an issue is `human`-labelled.
     #[arg(long)]
     human_assignee: Option<String>,
+    /// CI mode override. Overrides `[ci].mode` in `.conductr` for this run.
+    #[arg(long, value_enum)]
+    ci: Option<CiModeArg>,
+    /// Path to the repo root for reading `.conductr` config (defaults to cwd).
+    #[arg(long)]
+    repo_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -1460,11 +1487,42 @@ async fn run_orchestrate(args: OrchestrateArgs) -> Result<()> {
         .repo
         .split_once('/')
         .with_context(|| format!("invalid --repo `{}` (expected owner/repo)", args.repo))?;
+
+    let repo_root = args
+        .repo_root
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    // Read [ci] section and optionally build a LocalCi adapter.
+    let ci_section = config::read_ci_section(&repo_root)?;
+    let ci_mode: CiMode = args
+        .ci
+        .map(CiMode::from)
+        .unwrap_or(ci_section.mode);
+
+    let local_ci: Option<std::sync::Arc<dyn LocalCi>> = if ci_section.commands.is_empty() {
+        None
+    } else {
+        Some(std::sync::Arc::new(LocalCiAdapter::new(
+            repo_root,
+            LocalCiConfig {
+                commands: ci_section.commands,
+                timeout_secs: ci_section.timeout_secs,
+                mode: ci_mode,
+            },
+        )))
+    };
+
     let mut cfg = OrchestratorConfig::new(RepoSlug::new(owner, repo));
     cfg.dry_run = args.dry_run;
     cfg.poll_interval = std::time::Duration::from_secs(args.poll_secs);
     cfg.default_human_assignee = args.human_assignee;
-    let orch = Orchestrator::new(GhCli, cfg);
+    cfg.ci_mode = ci_mode;
+
+    let mut orch = Orchestrator::new(GhCli, cfg);
+    if let Some(lci) = local_ci {
+        orch = orch.with_local_ci(lci);
+    }
+
     if args.once {
         let report = orch.run_cycle().await?;
         println!("{}", serde_json::to_string_pretty(&report_to_json(&report))?);
@@ -1485,6 +1543,7 @@ fn report_to_json(r: &conductr_orchestrate::orchestrator::CycleReport) -> serde_
         "human": r.human,
         "pr_failing": r.pr_failing,
         "progress_made": r.progress_made,
+        "local_ci": r.local_ci,
     })
 }
 
