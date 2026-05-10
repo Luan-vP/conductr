@@ -113,6 +113,7 @@ fn apply_fix(id: &str, repo: &Path, dry_run: bool) -> Result<()> {
     match id {
         "ci-workflow" => fixes::add_ci_workflow(repo, dry_run),
         "gitignore-target" => fixes::add_gitignore_target(repo, dry_run),
+        "gitignore-conductr-local" => fixes::add_gitignore_conductr_local(repo, dry_run),
         "dev-branch" => fixes::init_git_flow(repo, dry_run),
         "codeowners" => fixes::add_codeowners(repo, dry_run),
         "claude-app" => fixes::install_claude_app(repo, dry_run),

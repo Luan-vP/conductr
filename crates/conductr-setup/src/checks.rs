@@ -37,6 +37,23 @@ pub fn check_ci_workflow(repo: &Path) -> MaturityCheckResult {
     if found.is_some() { pass(check) } else { fail(check, "no .github/workflows/*.yml found") }
 }
 
+pub fn check_gitignore_conductr_local(repo: &Path) -> MaturityCheckResult {
+    let check = MaturityCheck::new(
+        "gitignore-conductr-local",
+        MaturityLevel::L1Tested,
+        ".gitignore covers .conductr-local",
+        true,
+    );
+    let covered = std::fs::read_to_string(repo.join(".gitignore"))
+        .map(|s| s.lines().any(|l| l.trim() == ".conductr-local"))
+        .unwrap_or(false);
+    if covered {
+        pass(check)
+    } else {
+        fail(check, ".gitignore missing or doesn't cover .conductr-local")
+    }
+}
+
 pub fn check_gitignore_target(repo: &Path) -> MaturityCheckResult {
     let check = MaturityCheck::new(
         "gitignore-target",
@@ -214,6 +231,7 @@ pub fn run_all(repo: &Path) -> Vec<MaturityCheckResult> {
     vec![
         check_ci_workflow(repo),
         check_gitignore_target(repo),
+        check_gitignore_conductr_local(repo),
         check_dev_branch(repo),
         check_default_base_dev(repo),
         check_claude_base_md(repo),
