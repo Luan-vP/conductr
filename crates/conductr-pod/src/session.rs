@@ -5,10 +5,10 @@
 //! [`SessionState::Existing`] with the current [`Health`]). The caller is
 //! responsible for deciding what to do next (start Claude, send a prompt, skip).
 
+use conductr_core::ports::TmuxAgent;
 use conductr_core::types::{Health, TmuxError};
 
 use crate::diagnose::diagnose_one;
-use crate::tmux::Tmux;
 
 /// What `ensure_session` found or did.
 #[derive(Debug, Clone)]
@@ -27,7 +27,7 @@ pub enum SessionState {
 /// [`SessionState::Created`] is returned. No Claude Code process is started —
 /// that is the caller's responsibility.
 pub async fn ensure_session(
-    tmux: &Tmux,
+    tmux: &impl TmuxAgent,
     name: &str,
     cwd: &str,
 ) -> Result<SessionState, TmuxError> {
