@@ -107,8 +107,27 @@ struct CadenceArgs {
 
 #[derive(Debug, Subcommand)]
 enum CadenceCmd {
-    /// Apply or update host crontab entries from `.conductr [cadence]`.
+    /// Apply or update crontab or LaunchAgent entries from `.conductr [cadence]`.
     Sync(CadenceSyncArgs),
+    /// Show realized schedule state and drift from `.conductr [cadence]`.
+    Status(CadenceStatusArgs),
+    /// Remove installed schedules recorded in `.conductr-local`.
+    Remove(CadenceRemoveArgs),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum CadenceMechanism {
+    Crontab,
+    Launchd,
+}
+
+impl From<CadenceMechanism> for cadence::Mechanism {
+    fn from(m: CadenceMechanism) -> Self {
+        match m {
+            CadenceMechanism::Crontab => cadence::Mechanism::Crontab,
+            CadenceMechanism::Launchd => cadence::Mechanism::Launchd,
+        }
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -116,7 +135,27 @@ struct CadenceSyncArgs {
     /// Path to the repo containing `.conductr` (defaults to current directory).
     #[arg(long)]
     repo: Option<PathBuf>,
-    /// Print the planned crontab without writing.
+    /// Print the planned changes without writing anything.
+    #[arg(long)]
+    dry_run: bool,
+    /// Scheduling mechanism: crontab (default) or launchd (macOS).
+    #[arg(long, value_enum, default_value = "crontab")]
+    mechanism: CadenceMechanism,
+}
+
+#[derive(Debug, Parser)]
+struct CadenceStatusArgs {
+    /// Path to the repo containing `.conductr` (defaults to current directory).
+    #[arg(long)]
+    repo: Option<PathBuf>,
+}
+
+#[derive(Debug, Parser)]
+struct CadenceRemoveArgs {
+    /// Path to the repo containing `.conductr` (defaults to current directory).
+    #[arg(long)]
+    repo: Option<PathBuf>,
+    /// Print the planned removal without executing it.
     #[arg(long)]
     dry_run: bool,
 }
@@ -1222,7 +1261,19 @@ fn run_cadence(args: CadenceArgs) -> Result<()> {
     match args.cmd {
         CadenceCmd::Sync(a) => {
             let repo = a.repo.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-            let report = cadence::sync(&repo, a.dry_run)?;
+            let report = cadence::sync(&repo, a.dry_run, cadence::Mechanism::from(a.mechanism))?;
+            println!("{report}");
+            Ok(())
+        }
+        CadenceCmd::Status(a) => {
+            let repo = a.repo.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let report = cadence::status(&repo)?;
+            println!("{report}");
+            Ok(())
+        }
+        CadenceCmd::Remove(a) => {
+            let repo = a.repo.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let report = cadence::remove(&repo, a.dry_run)?;
             println!("{report}");
             Ok(())
         }

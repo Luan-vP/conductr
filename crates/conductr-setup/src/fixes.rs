@@ -106,6 +106,28 @@ pub fn install_claude_app(_repo: &Path, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// Adds `.conductr-local` to `.gitignore` if not already present.
+pub fn add_gitignore_conductr_local(repo: &Path, dry_run: bool) -> Result<()> {
+    let path = repo.join(".gitignore");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if existing.lines().any(|l| l.trim() == ".conductr-local") {
+        println!(".gitignore already covers .conductr-local");
+        return Ok(());
+    }
+    if dry_run {
+        println!("[dry-run] would append '.conductr-local' to {}", path.display());
+    } else {
+        let mut content = existing;
+        if !content.ends_with('\n') && !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(".conductr-local\n");
+        std::fs::write(&path, content)?;
+        println!("appended '.conductr-local' to {}", path.display());
+    }
+    Ok(())
+}
+
 /// Writes the `.github/workflows/claude.yml` workflow.
 pub fn add_claude_workflow(repo: &Path, dry_run: bool) -> Result<()> {
     let dir = repo.join(".github/workflows");
