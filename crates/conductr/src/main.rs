@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use conductr_orchestrate::{GhCli, Orchestrator, OrchestratorConfig, RepoSlug};
-use conductr_pod::{diagnose_all, heal_all, Diagnosis, Health, Tmux};
+use conductr_pod::{diagnose_all, heal_all, pick_idle, Diagnosis, FreeOpts, Health, Tmux};
 use conductr_schedule::{parse, render_ascii};
 use conductr_tasks::beads::Beads;
 use serde::Serialize;
@@ -29,6 +29,8 @@ enum Cmd {
     Tasks(TasksArgs),
     /// Inspect the local Claude Code pod (tmux sessions on this host).
     Diagnose(DiagnoseArgs),
+    /// Find an idle Claude Code session and print its tmux attach command.
+    Free(FreeArgs),
     /// Restart any crashed Claude Code sessions in the pod.
     Heal(HealArgs),
     /// Snapshot unfinished work to beads then restart pod sessions.
@@ -96,6 +98,22 @@ struct DiagnoseArgs {
     #[arg(long)]
     all: bool,
     /// Emit machine-readable JSON instead of a table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct FreeArgs {
+    /// Substring to filter session names by (default: `claude`).
+    #[arg(long)]
+    pattern: Option<String>,
+    /// Consider every tmux session, not just the Claude pod.
+    #[arg(long)]
+    all: bool,
+    /// Allow picking a session that already has an attached client.
+    #[arg(long)]
+    include_attached: bool,
+    /// Emit machine-readable JSON instead of the plain attach command.
     #[arg(long)]
     json: bool,
 }
@@ -180,6 +198,7 @@ async fn main() -> Result<()> {
         Cmd::Schedule(a) => run_schedule(a),
         Cmd::Tasks(a) => run_tasks(a).await,
         Cmd::Diagnose(a) => run_diagnose(a).await,
+        Cmd::Free(a) => run_free(a).await,
         Cmd::Heal(a) => run_heal(a).await,
         Cmd::SaveState(a) => run_save_state(a).await,
     }
@@ -232,6 +251,60 @@ async fn run_diagnose(args: DiagnoseArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+async fn run_free(args: FreeArgs) -> Result<()> {
+    let tmux = Tmux::new();
+    let pattern = pod_pattern(args.pattern.as_deref(), args.all);
+    let diagnoses = diagnose_all(&tmux, pattern).await?;
+
+    let opts = FreeOpts { include_attached: args.include_attached };
+    match pick_idle(&diagnoses, &opts) {
+        Some(d) => {
+            let cmd = format!("tmux attach -t {}", d.session.name);
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "session": d.session.name,
+                        "command": cmd,
+                    }))?
+                );
+            } else {
+                println!("{cmd}");
+            }
+            Ok(())
+        }
+        None => {
+            let reason = if diagnoses.is_empty() {
+                format!("no sessions matched (pattern={:?})", pattern.unwrap_or("*"))
+            } else {
+                let working = diagnoses.iter().filter(|d| matches!(d.health, Health::Working { .. })).count();
+                let crashed = diagnoses.iter().filter(|d| matches!(d.health, Health::Crashed { .. })).count();
+                let idle_attached = diagnoses
+                    .iter()
+                    .filter(|d| matches!(d.health, Health::Idle { .. }) && d.session.attached)
+                    .count();
+                let mut parts: Vec<String> = Vec::new();
+                if working > 0 {
+                    parts.push(format!("{working} working"));
+                }
+                if crashed > 0 {
+                    parts.push(format!("{crashed} crashed"));
+                }
+                if idle_attached > 0 && !args.include_attached {
+                    parts.push(format!("{idle_attached} idle but attached"));
+                }
+                if parts.is_empty() {
+                    "no idle sessions".into()
+                } else {
+                    format!("no idle session in pod ({})", parts.join(", "))
+                }
+            };
+            eprintln!("{reason}");
+            std::process::exit(1);
+        }
+    }
 }
 
 async fn run_heal(args: HealArgs) -> Result<()> {
