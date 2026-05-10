@@ -13,11 +13,9 @@ pub mod diagnose;
 pub mod free;
 pub mod heal;
 pub mod session;
-pub mod tmux;
 
 pub use conductr_core::types::*;
 pub use diagnose::{diagnose_all, diagnose_one};
 pub use free::{pick_idle, FreeOpts};
 pub use heal::{heal_all, HealOutcome, HealPlan};
 pub use session::{ensure_session, SessionState};
-pub use tmux::Tmux;

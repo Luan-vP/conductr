@@ -129,6 +129,11 @@ impl TmuxAgent for Tmux {
     async fn send_key(&self, session: &str, key: &str) -> Result<(), TmuxError> {
         self.run(&["send-keys", "-t", session, key]).await.map(|_| ())
     }
+
+    /// Create a new detached session named `name`, starting in `cwd`.
+    async fn new_session(&self, name: &str, cwd: &str) -> Result<(), TmuxError> {
+        self.run(&["new-session", "-d", "-s", name, "-c", cwd]).await.map(|_| ())
+    }
 }
 
 #[cfg(test)]

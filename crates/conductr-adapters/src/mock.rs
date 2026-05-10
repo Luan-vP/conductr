@@ -116,6 +116,15 @@ impl TmuxAgent for MockTmuxAgent {
             .push(key.to_string());
         Ok(())
     }
+
+    async fn new_session(&self, name: &str, _cwd: &str) -> Result<(), TmuxError> {
+        self.sessions
+            .write()
+            .unwrap()
+            .entry(name.to_string())
+            .or_insert_with(|| MockSession { pane_content: String::new() });
+        Ok(())
+    }
 }
 
 // ── MockIssueTracker ──────────────────────────────────────────────────────────

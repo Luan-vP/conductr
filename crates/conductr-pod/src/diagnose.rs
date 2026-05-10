@@ -8,15 +8,14 @@
 
 use chrono::Utc;
 
+use conductr_core::ports::TmuxAgent;
 use conductr_core::types::{Diagnosis, Health, TmuxError, TmuxSession};
-
-use crate::tmux::Tmux;
 
 /// Run a diagnose pass over all live tmux sessions.
 ///
 /// `pattern` is an optional substring filter on session name. Pass `None` to
 /// inspect every session on the host.
-pub async fn diagnose_all(tmux: &Tmux, pattern: Option<&str>) -> Result<Vec<Diagnosis>, TmuxError> {
+pub async fn diagnose_all(tmux: &impl TmuxAgent, pattern: Option<&str>) -> Result<Vec<Diagnosis>, TmuxError> {
     let sessions = tmux.list_sessions().await?;
     let mut out = Vec::with_capacity(sessions.len());
     for s in sessions {
@@ -31,7 +30,7 @@ pub async fn diagnose_all(tmux: &Tmux, pattern: Option<&str>) -> Result<Vec<Diag
 }
 
 /// Diagnose a single named session.
-pub async fn diagnose_one(tmux: &Tmux, name: &str) -> Result<Diagnosis, TmuxError> {
+pub async fn diagnose_one(tmux: &impl TmuxAgent, name: &str) -> Result<Diagnosis, TmuxError> {
     let sessions = tmux.list_sessions().await?;
     let s = sessions
         .into_iter()
@@ -40,7 +39,7 @@ pub async fn diagnose_one(tmux: &Tmux, name: &str) -> Result<Diagnosis, TmuxErro
     diagnose_session(tmux, s).await
 }
 
-async fn diagnose_session(tmux: &Tmux, session: TmuxSession) -> Result<Diagnosis, TmuxError> {
+async fn diagnose_session(tmux: &impl TmuxAgent, session: TmuxSession) -> Result<Diagnosis, TmuxError> {
     let pane = tmux.capture_pane(&session.name).await?;
     let health = classify(&pane);
     let tail: Vec<String> = pane
@@ -234,5 +233,44 @@ user@host:~/developer$
             }
             other => panic!("expected Idle, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn mock_diagnose_all_crashed_pane() {
+        use conductr_adapters::mock::MockTmuxAgent;
+        let mock = MockTmuxAgent::new().with_session("s1", CRASHED_PANE);
+        let diagnoses = diagnose_all(&mock, None).await.unwrap();
+        assert_eq!(diagnoses.len(), 1);
+        assert!(matches!(diagnoses[0].health, Health::Crashed { .. }));
+    }
+
+    #[tokio::test]
+    async fn mock_diagnose_all_idle_pane() {
+        use conductr_adapters::mock::MockTmuxAgent;
+        let mock = MockTmuxAgent::new().with_session("s1", IDLE_PANE);
+        let diagnoses = diagnose_all(&mock, None).await.unwrap();
+        assert_eq!(diagnoses.len(), 1);
+        assert!(matches!(diagnoses[0].health, Health::Idle { .. }));
+    }
+
+    #[tokio::test]
+    async fn mock_diagnose_all_pattern_filter() {
+        use conductr_adapters::mock::MockTmuxAgent;
+        let mock = MockTmuxAgent::new()
+            .with_session("claude-1", IDLE_PANE)
+            .with_session("other", CRASHED_PANE);
+        let diagnoses = diagnose_all(&mock, Some("claude")).await.unwrap();
+        assert_eq!(diagnoses.len(), 1);
+        assert_eq!(diagnoses[0].session.name, "claude-1");
+    }
+
+    #[tokio::test]
+    async fn mock_diagnose_one_by_name() {
+        use conductr_adapters::mock::MockTmuxAgent;
+        let mock = MockTmuxAgent::new()
+            .with_session("foo", IDLE_PANE)
+            .with_session("bar", CRASHED_PANE);
+        let d = diagnose_one(&mock, "bar").await.unwrap();
+        assert!(matches!(d.health, Health::Crashed { .. }));
     }
 }
