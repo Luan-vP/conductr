@@ -8,12 +8,16 @@ A Rust workspace that bundles four concerns into one CLI:
 
 | Crate                   | Concern                                                                 |
 |-------------------------|-------------------------------------------------------------------------|
-| `conductr`              | Binary CLI that dispatches to the others.                               |
+| `conductr`              | Binary CLI; constructs and wires adapters into use-case crates.         |
+| `conductr-core`         | Shared domain types and port traits (`IssueTracker`, `ScmHost`, `TmuxAgent`, `InstanceProvider`, `Mailbox`). No I/O. |
+| `conductr-adapters`     | Feature-gated concrete connectors (`tmux`, `beads`, `notion`, `gh-cli`, `mail-fs`, `mail-github`, `mock`). Enable all with `--features full`. |
 | `conductr-orchestrate`  | Port of [poorchestrator] — drive `@claude` GitHub-issue implementation in dependency order.  |
 | `conductr-instance`     | Cloud instance spin-up & SSH (port of `agentic`; **stubbed**).          |
 | `conductr-pod`          | Diagnose and heal the local Claude Code pod (tmux sessions on this host). |
 | `conductr-schedule`     | Time patterns described in **musical notation** (the seed concept).     |
 | `conductr-tasks`        | Task tracking via [beads_rust] (`br`, local SQLite + JSONL) and Notion. |
+| `conductr-mail`         | Agent scope dedup and parallel-synthesis substrate.                     |
+| `conductr-setup`        | Project maturity model (L0–L5) and `conductr setup` wizard.             |
 
 [poorchestrator]: https://github.com/Luan-vP/poorchestrator
 [beads_rust]: https://github.com/Dicklesworthstone/beads_rust
@@ -46,6 +50,66 @@ git submodule update --init --recursive
 cargo build --workspace
 cargo test  --workspace
 ```
+
+To build with all adapters enabled:
+
+```bash
+cargo build --workspace --features full
+```
+
+## Architecture
+
+`conductr` follows a **hexagonal (ports & adapters)** layout. The CLI binary
+and in-Claude skills both call the same use-case crates; those crates depend
+only on a shared core (types + port traits); concrete connectors live behind
+feature flags in `conductr-adapters`.
+
+```
+              ┌────────────────────────────────────┐
+  driving     │  crates/conductr   (binary, CLI)   │
+              │  skills/*          (markdown)      │
+              └─────────────────┬──────────────────┘
+                                ▼
+              ┌────────────────────────────────────┐
+  use-cases   │  crates/conductr-orchestrate       │
+  (arms)      │  crates/conductr-pod               │
+              │  crates/conductr-tasks             │
+              │  crates/conductr-instance          │
+              │  crates/conductr-schedule  (pure)  │
+              │  crates/conductr-mail              │
+              │  crates/conductr-setup             │
+              └─────────────────┬──────────────────┘
+                                ▼
+              ┌────────────────────────────────────┐
+  core        │  crates/conductr-core              │
+              │   ::types  (domain models)         │
+              │   ::ports  (trait surface)         │
+              └─────────────────┬──────────────────┘
+                                ▼
+              ┌────────────────────────────────────┐
+  adapters    │  crates/conductr-adapters          │
+  (folds)     │   feature: tmux                    │
+              │   feature: beads                   │
+              │   feature: notion                  │
+              │   feature: gh-cli                  │
+              │   feature: mail-fs                 │
+              │   feature: mail-github             │
+              │   feature: mock                    │
+              └────────────────────────────────────┘
+```
+
+**Where to look when you want to…**
+
+| Goal | Crate |
+|------|-------|
+| Add a Linear or Jira connector | `conductr-adapters` — add a new adapter behind a feature flag |
+| Change save-state session classification | `conductr-pod` — the use-case logic |
+| Rename a domain field (`Task`, `Issue`, `Diagnosis`, …) | `conductr-core::types` |
+| Change the CLI surface | `conductr` — the binary |
+
+Adapters are compiled only when their feature flag is set; use `--features full`
+to enable all of them at once. Full architecture details, port definitions, and
+the six design rules live in [`.claude/base.md`](.claude/base.md).
 
 ## CLI
 
@@ -218,15 +282,23 @@ will be ported once `vendor/agentic` is wired up.
 .
 ├── Cargo.toml                       # workspace root
 ├── README.md
+├── .claude/
+│   └── base.md                      # hexagonal architecture reference
+├── docs/
 ├── examples/
 │   └── conductor_life_day.pattern
+├── skills/
 ├── crates/
-│   ├── conductr/                    # binary
-│   ├── conductr-orchestrate/
-│   ├── conductr-instance/
-│   ├── conductr-pod/
-│   ├── conductr-schedule/
-│   └── conductr-tasks/
+│   ├── conductr/                    # binary (driving adapter)
+│   ├── conductr-core/               # domain types + port traits (no I/O)
+│   ├── conductr-adapters/           # feature-gated concrete adapters
+│   ├── conductr-orchestrate/        # use-case: orchestrate GitHub issues
+│   ├── conductr-instance/           # use-case: cloud instance management
+│   ├── conductr-pod/                # use-case: diagnose/heal Claude pod
+│   ├── conductr-schedule/           # use-case: musical-notation schedules
+│   ├── conductr-tasks/              # use-case: task tracking
+│   ├── conductr-mail/               # use-case: agent scope dedup + synthesis
+│   └── conductr-setup/              # use-case: project maturity wizard
 └── vendor/
     ├── poorchestrator/              # submodule
     └── beads_rust/                  # submodule
