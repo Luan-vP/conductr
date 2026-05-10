@@ -78,6 +78,11 @@ struct LocalSchedule {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+pub fn show(repo_path: &Path) -> Result<String> {
+    let cfg = read_config(repo_path)?;
+    Ok(render_cadence_staff(&cfg.cadence))
+}
+
 pub fn sync(repo_path: &Path, dry_run: bool, mechanism: Mechanism) -> Result<String> {
     let cfg = read_config(repo_path)?;
     match mechanism {
@@ -651,6 +656,112 @@ fn write_local_file(repo_path: &Path, local: &LocalFile) -> Result<()> {
     Ok(())
 }
 
+// ── Staff renderer ────────────────────────────────────────────────────────────
+
+const STAFF_BARS: usize = 6;
+const STAFF_SLOTS_PER_BAR: usize = 16; // 16 × 15min = 4h per bar
+const STAFF_TOTAL_SLOTS: usize = STAFF_BARS * STAFF_SLOTS_PER_BAR; // 96 slots = 24h
+const STAFF_MINS_PER_SLOT: u32 = (24 * 60) as u32 / STAFF_TOTAL_SLOTS as u32; // 15
+const STAFF_SLOT_CHARS: usize = 2; // "@'" or "__"
+const STAFF_BAR_CHARS: usize = STAFF_SLOTS_PER_BAR * STAFF_SLOT_CHARS; // 32
+
+fn render_cadence_staff(cadence: &BTreeMap<String, String>) -> String {
+    let label_width = cadence.keys().map(|k| k.len()).max().unwrap_or(0);
+    let margin = " ".repeat(label_width + 2);
+
+    let make_border = |left: char, mid: char, right: char, fill: char| -> String {
+        let section: String = std::iter::repeat(fill).take(STAFF_BAR_CHARS).collect();
+        let mut s = margin.clone();
+        s.push(left);
+        for i in 0..STAFF_BARS {
+            s.push_str(&section);
+            if i < STAFF_BARS - 1 {
+                s.push(mid);
+            }
+        }
+        s.push(right);
+        s
+    };
+
+    // Hour label header
+    let mut header = margin.clone();
+    for bar in 0..STAFF_BARS {
+        let label = format!("{:02}:00 UTC", bar * 4);
+        // each bar section = STAFF_BAR_CHARS + 1 (separator) wide
+        let pad = STAFF_BAR_CHARS + 1 - label.len().min(STAFF_BAR_CHARS + 1);
+        header.push_str(&label);
+        header.push_str(&" ".repeat(pad));
+    }
+    header.push_str("00:00");
+
+    let top_border = make_border('╔', '╦', '╗', '═');
+    let mid_border = make_border('╠', '╬', '╣', '═');
+    let bot_border = make_border('╚', '╩', '╝', '═');
+
+    let mut lines = vec![header, top_border];
+
+    for (idx, (task, cron)) in cadence.iter().enumerate() {
+        if idx > 0 {
+            lines.push(mid_border.clone());
+        }
+
+        let label = format!("{:>width$}  ", task, width = label_width);
+        let mut row = label;
+        row.push('║');
+
+        match cron_to_minutes_24h(cron) {
+            Err(e) => {
+                row.push_str(&format!("  cron error: {e}"));
+            }
+            Ok(fire_minutes) => {
+                for bar in 0..STAFF_BARS {
+                    for slot in 0..STAFF_SLOTS_PER_BAR {
+                        let slot_abs = bar * STAFF_SLOTS_PER_BAR + slot;
+                        let minute_start = slot_abs as u32 * STAFF_MINS_PER_SLOT;
+                        let fires = fire_minutes
+                            .iter()
+                            .any(|&m| m >= minute_start && m < minute_start + STAFF_MINS_PER_SLOT);
+                        row.push_str(if fires { "@'" } else { "__" });
+                    }
+                    if bar < STAFF_BARS - 1 {
+                        row.push('║');
+                    }
+                }
+            }
+        }
+
+        row.push('║');
+        lines.push(row);
+    }
+
+    lines.push(bot_border);
+    lines.join("\n")
+}
+
+/// Returns all UTC minutes (0–1439) when the cron fires in a 24 h window.
+/// Day, month, and weekday fields are ignored (treated as wildcards) for
+/// the purposes of visualising a single day's rhythm.
+fn cron_to_minutes_24h(cron: &str) -> Result<Vec<u32>> {
+    let parts: Vec<&str> = cron.split_whitespace().collect();
+    if parts.len() != 5 {
+        anyhow::bail!("expected 5-field cron expression, got: {cron:?}");
+    }
+
+    let raw_minutes = expand_cron_field(parts[0], 0, 59)?;
+    let raw_hours = expand_cron_field(parts[1], 0, 23)?;
+
+    let minute_vals: Vec<u32> = if raw_minutes.is_empty() { (0u32..=59).collect() } else { raw_minutes };
+    let hour_vals: Vec<u32> = if raw_hours.is_empty() { (0u32..=23).collect() } else { raw_hours };
+
+    let mut result: Vec<u32> = hour_vals
+        .iter()
+        .flat_map(|&h| minute_vals.iter().map(move |&m| h * 60 + m))
+        .collect();
+    result.sort_unstable();
+    result.dedup();
+    Ok(result)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -856,5 +967,71 @@ mod tests {
         .unwrap();
         assert!(plist.contains("StartInterval"));
         assert!(!plist.contains("StartCalendarInterval"));
+    }
+
+    // ── cron_to_minutes_24h ───────────────────────────────────────────────────
+
+    #[test]
+    fn minutes_24h_every_30() {
+        let m = cron_to_minutes_24h("*/30 * * * *").unwrap();
+        assert_eq!(m.len(), 48, "*/30 fires 48 times in 24 h");
+        assert_eq!(m[0], 0);
+        assert_eq!(m[1], 30);
+        assert_eq!(m[47], 23 * 60 + 30);
+    }
+
+    #[test]
+    fn minutes_24h_midnight_only() {
+        let m = cron_to_minutes_24h("0 0 * * *").unwrap();
+        assert_eq!(m, vec![0]);
+    }
+
+    #[test]
+    fn minutes_24h_every_minute() {
+        let m = cron_to_minutes_24h("* * * * *").unwrap();
+        assert_eq!(m.len(), 1440);
+    }
+
+    // ── render_cadence_staff ─────────────────────────────────────────────────
+
+    #[test]
+    fn staff_every_30min_has_48_noteheads() {
+        let mut cadence = BTreeMap::new();
+        cadence.insert("orchestrate".to_string(), "*/30 * * * *".to_string());
+        let output = render_cadence_staff(&cadence);
+        let count = output.matches("@'").count();
+        assert_eq!(count, 48, "*/30 * * * * should place exactly 48 noteheads in the 24 h staff");
+    }
+
+    #[test]
+    fn staff_midnight_only_has_1_notehead() {
+        let mut cadence = BTreeMap::new();
+        cadence.insert("backup".to_string(), "0 0 * * *".to_string());
+        let output = render_cadence_staff(&cadence);
+        let count = output.matches("@'").count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn staff_two_tasks_includes_both_labels() {
+        let mut cadence = BTreeMap::new();
+        cadence.insert("backup".to_string(), "0 0 * * *".to_string());
+        cadence.insert("orchestrate".to_string(), "*/30 * * * *".to_string());
+        let output = render_cadence_staff(&cadence);
+        assert!(output.contains("backup"));
+        assert!(output.contains("orchestrate"));
+        // Total noteheads: 48 (orchestrate) + 1 (backup)
+        assert_eq!(output.matches("@'").count(), 49);
+    }
+
+    #[test]
+    fn staff_has_six_bars() {
+        let mut cadence = BTreeMap::new();
+        cadence.insert("task".to_string(), "0 * * * *".to_string()); // once per hour
+        let output = render_cadence_staff(&cadence);
+        // 24 noteheads (one per hour) — every 16th slot per bar
+        assert_eq!(output.matches("@'").count(), 24);
+        // 6 top-border ╦ separators expected (5 inner + corners differ)
+        assert!(output.contains("╦"));
     }
 }

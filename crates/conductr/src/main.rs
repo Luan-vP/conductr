@@ -116,6 +116,8 @@ enum CadenceCmd {
     Status(CadenceStatusArgs),
     /// Remove installed schedules recorded in `.conductr-local`.
     Remove(CadenceRemoveArgs),
+    /// Render `.conductr [cadence]` as a 24 h ASCII music staff.
+    Show(CadenceShowArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -161,6 +163,13 @@ struct CadenceRemoveArgs {
     /// Print the planned removal without executing it.
     #[arg(long)]
     dry_run: bool,
+}
+
+#[derive(Debug, Parser)]
+struct CadenceShowArgs {
+    /// Path to the repo containing `.conductr` (defaults to current directory).
+    #[arg(long)]
+    repo: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -1279,6 +1288,12 @@ fn run_cadence(args: CadenceArgs) -> Result<()> {
             let repo = a.repo.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
             let report = cadence::remove(&repo, a.dry_run)?;
             println!("{report}");
+            Ok(())
+        }
+        CadenceCmd::Show(a) => {
+            let repo = a.repo.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let output = cadence::show(&repo)?;
+            println!("{output}");
             Ok(())
         }
     }
