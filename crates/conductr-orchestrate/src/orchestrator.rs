@@ -5,17 +5,17 @@ use std::collections::BTreeSet;
 use tracing::{info, warn};
 
 use crate::classifier::{classify, Bucket, Classification};
-use crate::github::GitHubClient;
-use crate::types::{IssueNumber, RepoSlug};
+use crate::types::IssueNumber;
+use conductr_core::ports::ScmHost;
 
 pub use conductr_core::types::{CycleReport, OrchestratorConfig};
 
-pub struct Orchestrator<C: GitHubClient> {
+pub struct Orchestrator<C: ScmHost> {
     pub client: C,
     pub config: OrchestratorConfig,
 }
 
-impl<C: GitHubClient> Orchestrator<C> {
+impl<C: ScmHost> Orchestrator<C> {
     pub fn new(client: C, config: OrchestratorConfig) -> Self {
         Self { client, config }
     }
@@ -135,67 +135,39 @@ impl<C: GitHubClient> Orchestrator<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Issue, IssueState, Pr};
-    use async_trait::async_trait;
-    use std::sync::Mutex;
-
-    #[derive(Default)]
-    struct FakeClient {
-        pub triggered: Mutex<Vec<IssueNumber>>,
-        pub merged: Mutex<Vec<u64>>,
-    }
-
-    #[async_trait]
-    impl GitHubClient for FakeClient {
-        async fn list_open_issues(&self, _: &RepoSlug) -> anyhow::Result<Vec<Issue>> {
-            Ok(vec![Issue {
-                number: 1,
-                title: "x".into(),
-                body: "no deps".into(),
-                labels: vec![],
-                state: IssueState::Open,
-            }])
-        }
-        async fn list_closed_issue_numbers(&self, _: &RepoSlug) -> anyhow::Result<BTreeSet<IssueNumber>> {
-            Ok(BTreeSet::new())
-        }
-        async fn list_open_prs(&self, _: &RepoSlug) -> anyhow::Result<Vec<Pr>> {
-            Ok(vec![])
-        }
-        async fn list_issue_comments(&self, _: &RepoSlug, _: IssueNumber) -> anyhow::Result<Vec<String>> {
-            Ok(vec![])
-        }
-        async fn comment_issue(&self, _: &RepoSlug, n: IssueNumber, _: &str) -> anyhow::Result<()> {
-            self.triggered.lock().unwrap().push(n);
-            Ok(())
-        }
-        async fn assign_issue(&self, _: &RepoSlug, _: IssueNumber, _: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-        async fn merge_pr_squash(&self, _: &RepoSlug, n: u64) -> anyhow::Result<()> {
-            self.merged.lock().unwrap().push(n);
-            Ok(())
-        }
-    }
+    use conductr_adapters::mock::MockScmHost;
+    use conductr_core::types::{Issue, IssueState, RepoSlug};
 
     #[tokio::test]
     async fn ready_issue_gets_triggered() {
-        let client = FakeClient::default();
+        let client = MockScmHost::new().with_issues([Issue {
+            number: 1,
+            title: "x".into(),
+            body: "no deps".into(),
+            labels: vec![],
+            state: IssueState::Open,
+        }]);
         let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
         let orch = Orchestrator::new(client, cfg);
         let report = orch.run_cycle().await.unwrap();
         assert_eq!(report.triggered, vec![1]);
-        assert_eq!(orch.client.triggered.lock().unwrap().clone(), vec![1]);
+        assert_eq!(orch.client.posted_comments(), vec![(1, "@claude please implement".to_string())]);
     }
 
     #[tokio::test]
     async fn dry_run_does_not_act() {
-        let client = FakeClient::default();
+        let client = MockScmHost::new().with_issues([Issue {
+            number: 1,
+            title: "x".into(),
+            body: "no deps".into(),
+            labels: vec![],
+            state: IssueState::Open,
+        }]);
         let mut cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
         cfg.dry_run = true;
         let orch = Orchestrator::new(client, cfg);
         let report = orch.run_cycle().await.unwrap();
         assert!(report.triggered.is_empty());
-        assert!(orch.client.triggered.lock().unwrap().is_empty());
+        assert!(orch.client.posted_comments().is_empty());
     }
 }

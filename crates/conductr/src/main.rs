@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use conductr_orchestrate::{GhCli, Orchestrator, OrchestratorConfig, RepoSlug};
+use conductr_adapters::gh_cli::GhCli;
+use conductr_orchestrate::{Orchestrator, OrchestratorConfig, RepoSlug};
 use conductr_pod::{
     diagnose_all, diagnose_one, ensure_session, heal_all, pick_idle, Diagnosis, FreeOpts, Health,
     SessionState, Tmux, TmuxError,
