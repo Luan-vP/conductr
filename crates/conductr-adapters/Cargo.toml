@@ -15,7 +15,8 @@ gh-cli      = ["dep:tokio", "dep:once_cell", "dep:regex"]
 mail-fs     = ["dep:tokio"]
 mail-github = ["dep:tokio"]
 mock        = []
-full        = ["tmux", "beads", "notion", "gh-cli", "mail-fs", "mail-github", "mock"]
+llamacpp    = ["dep:tokio", "dep:reqwest"]
+full        = ["tmux", "beads", "notion", "gh-cli", "mail-fs", "mail-github", "mock", "llamacpp"]
 
 [dependencies]
 conductr-core = { workspace = true }

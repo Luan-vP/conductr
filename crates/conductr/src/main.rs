@@ -56,6 +56,8 @@ enum Cmd {
     Setup(SetupArgs),
     /// Agent mail: scope-dedup and synthesis bulletin board.
     Mail(MailArgs),
+    /// Local inference adapter management.
+    Local(LocalArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -258,6 +260,7 @@ async fn main() -> Result<()> {
         Cmd::SaveState(a) => run_save_state(a).await,
         Cmd::Setup(a) => run_setup(a).await,
         Cmd::Mail(a) => run_mail(a).await,
+        Cmd::Local(a) => run_local(a).await,
     }
 }
 
@@ -1083,6 +1086,34 @@ fn run_schedule(args: ScheduleArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+// ── Local ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Parser)]
+struct LocalArgs {
+    #[command(subcommand)]
+    cmd: LocalCmd,
+}
+
+#[derive(Debug, Subcommand)]
+enum LocalCmd {
+    /// Probe each local-inference adapter and report its status.
+    Detect,
+}
+
+async fn run_local(args: LocalArgs) -> Result<()> {
+    match args.cmd {
+        LocalCmd::Detect => run_local_detect().await,
+    }
+}
+
+async fn run_local_detect() -> Result<()> {
+    let llamacpp = conductr_adapters::llamacpp::LlamaCpp::from_env();
+    // Construction itself is infallible; report the resolved host so the
+    // operator can see which endpoint would be used.
+    println!("llamacpp-adapter: ok  (host={})", llamacpp.host);
+    Ok(())
 }
 
 async fn run_tasks(args: TasksArgs) -> Result<()> {

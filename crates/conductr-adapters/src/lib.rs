@@ -18,3 +18,6 @@ pub mod mail_github;
 
 #[cfg(feature = "mock")]
 pub mod mock;
+
+#[cfg(feature = "llamacpp")]
+pub mod llamacpp;

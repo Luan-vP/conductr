@@ -97,6 +97,28 @@ pub trait InstanceProvider: Send + Sync {
     async fn tear_down(&self, handle: &InstanceHandle) -> Result<(), InstanceError>;
 }
 
+// ── LocalAgent ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, thiserror::Error)]
+pub enum LocalAgentError {
+    #[error("http: {0}")]
+    Http(String),
+    #[error("api error: {status} — {body}")]
+    Api { status: u16, body: String },
+    #[error("parse: {0}")]
+    Parse(String),
+}
+
+/// A locally-running inference backend (e.g. llama.cpp, Ollama).
+///
+/// The single method covers the minimal surface needed by conductr: send a
+/// user prompt, receive the assistant reply.
+#[async_trait]
+pub trait LocalAgent: Send + Sync {
+    /// Send a single user turn and return the assistant response text.
+    async fn complete(&self, prompt: &str) -> Result<String, LocalAgentError>;
+}
+
 // ── Mailbox ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, thiserror::Error)]
