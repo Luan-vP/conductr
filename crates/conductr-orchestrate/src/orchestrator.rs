@@ -1,6 +1,7 @@
 //! Top-level orchestration loop.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use tracing::{info, warn};
 
@@ -8,16 +9,44 @@ use crate::classifier::{classify, Bucket, Classification};
 use crate::github::GitHubClient;
 use crate::types::{IssueNumber, RepoSlug};
 
+use conductr_core::ports::Mailbox;
+use conductr_core::types::MailKind;
+
 pub use conductr_core::types::{CycleReport, OrchestratorConfig};
 
 pub struct Orchestrator<C: GitHubClient> {
     pub client: C,
     pub config: OrchestratorConfig,
+    mailbox: Option<Arc<dyn Mailbox>>,
 }
 
 impl<C: GitHubClient> Orchestrator<C> {
     pub fn new(client: C, config: OrchestratorConfig) -> Self {
-        Self { client, config }
+        Self { client, config, mailbox: None }
+    }
+
+    /// Attach an optional mailbox for scope-dedup. When set, `run_cycle` will
+    /// skip Ready issues that have an existing `ScopeClaim` overlap.
+    pub fn with_mailbox(mut self, mailbox: Arc<dyn Mailbox>) -> Self {
+        self.mailbox = Some(mailbox);
+        self
+    }
+
+    /// Check the mailbox for an existing scope claim that overlaps with `issue`.
+    /// Returns `Some(message_id)` if an overlap is found.
+    async fn check_scope_overlap(
+        mailbox: &dyn Mailbox,
+        issue: IssueNumber,
+    ) -> Option<String> {
+        let messages = mailbox.inbox(Some("scope_claim"), None).await.ok()?;
+        for msg in messages {
+            if let MailKind::ScopeClaim { issue: claimed_issue, .. } = &msg.payload {
+                if *claimed_issue == issue {
+                    return Some(msg.id.clone());
+                }
+            }
+        }
+        None
     }
 
     /// Run a single cycle of survey → classify → act.
@@ -68,9 +97,18 @@ impl<C: GitHubClient> Orchestrator<C> {
             }
         }
 
-        // 2) Trigger Ready issues in parallel (subject to dry_run).
+        // 2) Trigger Ready issues in parallel (subject to dry_run / scope dedup).
         for c in &classifications {
             if c.bucket == Bucket::Ready {
+                // Scope dedup: skip if another agent has claimed this issue.
+                if let Some(mb) = &self.mailbox {
+                    if let Some(msg_id) = Self::check_scope_overlap(mb.as_ref(), c.issue).await {
+                        info!(issue=c.issue, msg_id=%msg_id, "skipping — scope overlap");
+                        report.scope_overlap.push(c.issue);
+                        continue;
+                    }
+                }
+
                 if self.config.dry_run {
                     info!(issue=c.issue, "would trigger");
                 } else {
@@ -137,7 +175,11 @@ mod tests {
     use super::*;
     use crate::types::{Issue, IssueState, Pr};
     use async_trait::async_trait;
-    use std::sync::Mutex;
+    use chrono::Utc;
+    use std::sync::{Arc, Mutex, RwLock};
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+    use conductr_core::ports::{Mailbox, MailboxError};
+    use conductr_core::types::{MailKind, MailMessage, MailRef};
 
     #[derive(Default)]
     struct FakeClient {
@@ -178,6 +220,62 @@ mod tests {
         }
     }
 
+    /// Minimal in-test mailbox that pre-seeds messages.
+    #[derive(Default)]
+    struct FakeMailbox {
+        messages: Arc<RwLock<Vec<MailMessage>>>,
+        counter: AtomicU64,
+    }
+
+    impl FakeMailbox {
+        fn with_scope_claim(self, issue: u64) -> Self {
+            self.messages.write().unwrap().push(MailMessage {
+                id: format!("pre-{issue}"),
+                agent: "agent-a".into(),
+                sent_at: Utc::now(),
+                payload: MailKind::ScopeClaim {
+                    issue,
+                    files: vec!["src/lib.rs".into()],
+                    summary: "claimed".into(),
+                },
+            });
+            self
+        }
+    }
+
+    #[async_trait]
+    impl Mailbox for FakeMailbox {
+        async fn send(&self, agent: &str, payload: MailKind) -> Result<MailRef, MailboxError> {
+            let id = format!("msg-{}", self.counter.fetch_add(1, AtomicOrdering::SeqCst));
+            self.messages.write().unwrap().push(MailMessage {
+                id: id.clone(),
+                agent: agent.to_string(),
+                sent_at: Utc::now(),
+                payload,
+            });
+            Ok(id)
+        }
+
+        async fn inbox(
+            &self,
+            kind_filter: Option<&str>,
+            _since: Option<std::time::Duration>,
+        ) -> Result<Vec<MailMessage>, MailboxError> {
+            let all = self.messages.read().unwrap().clone();
+            Ok(match kind_filter {
+                Some("scope_claim") => all
+                    .into_iter()
+                    .filter(|m| matches!(m.payload, MailKind::ScopeClaim { .. }))
+                    .collect(),
+                _ => all,
+            })
+        }
+
+        async fn thread(&self, _: &MailRef) -> Result<Vec<MailMessage>, MailboxError> {
+            Ok(vec![])
+        }
+    }
+
     #[tokio::test]
     async fn ready_issue_gets_triggered() {
         let client = FakeClient::default();
@@ -197,5 +295,28 @@ mod tests {
         let report = orch.run_cycle().await.unwrap();
         assert!(report.triggered.is_empty());
         assert!(orch.client.triggered.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn scope_overlap_skips_ready_issue() {
+        let client = FakeClient::default();
+        let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
+        let mb = Arc::new(FakeMailbox::default().with_scope_claim(1));
+        let orch = Orchestrator::new(client, cfg).with_mailbox(mb);
+        let report = orch.run_cycle().await.unwrap();
+        // Issue 1 is Ready but has a scope claim → skipped.
+        assert!(report.triggered.is_empty());
+        assert_eq!(report.scope_overlap, vec![1]);
+        assert!(orch.client.triggered.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_mailbox_behaves_as_before() {
+        let client = FakeClient::default();
+        let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
+        let orch = Orchestrator::new(client, cfg);
+        let report = orch.run_cycle().await.unwrap();
+        assert_eq!(report.triggered, vec![1]);
+        assert!(report.scope_overlap.is_empty());
     }
 }

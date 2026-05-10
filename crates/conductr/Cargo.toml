@@ -26,5 +26,7 @@ conductr-pod         = { workspace = true }
 conductr-schedule    = { workspace = true }
 conductr-tasks       = { workspace = true }
 conductr-setup       = { workspace = true }
+conductr-mail        = { workspace = true }
+conductr-adapters    = { workspace = true, features = ["mail-fs"] }
 serde                = { workspace = true }
 chrono               = { workspace = true }

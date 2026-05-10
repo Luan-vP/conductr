@@ -1,0 +1,17 @@
+[package]
+name = "conductr-mail"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Scope-dedup and parallel-synthesis substrate for conductr agents"
+
+[dependencies]
+conductr-core = { workspace = true }
+async-trait   = { workspace = true }
+anyhow        = { workspace = true }
+chrono        = { workspace = true }
+
+[dev-dependencies]
+conductr-adapters = { path = "../conductr-adapters", features = ["mock"] }
+tokio = { workspace = true }
