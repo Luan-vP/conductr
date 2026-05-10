@@ -225,11 +225,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "conductr-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "conductr-instance"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "conductr-core",
  "serde",
  "thiserror",
  "tokio",
@@ -243,6 +256,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "conductr-core",
  "futures",
  "once_cell",
  "regex",
@@ -261,6 +275,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "conductr-core",
  "serde",
  "serde_json",
  "thiserror",
@@ -286,6 +301,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "conductr-core",
  "reqwest",
  "serde",
  "serde_json",

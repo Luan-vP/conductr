@@ -50,6 +50,7 @@ cargo test  --workspace
 ## CLI
 
 ```text
+conductr begin       --tag <tag> [--repo <owner/repo>] [--cwd <path>] [--continuous] [--dry-run]
 conductr orchestrate --repo owner/repo [--dry-run] [--once] [--poll-secs 60]
 conductr instance    spin-up --name <name> | list
 conductr schedule    validate <pattern.txt> | render <pattern.txt>
@@ -93,6 +94,64 @@ Pattern: 6/4 time, q=4h
        16h  +4h          q  work
        20h  +4h          q  rest
 ```
+
+### Begin (cron entry point)
+
+`conductr begin` is the single command you put in a cron line. It is
+idempotent and safe to fire on a schedule.
+
+```cron
+# Trigger an orchestrate pass every 30 minutes for the conductr repo.
+*/30 * * * * conductr begin --tag conductr --repo Luan-vP/conductr
+```
+
+What it does on each tick:
+
+1. **Session lookup / create** — looks for a tmux session named
+   `conductr-<tag>`. If absent, creates it with
+   `tmux new-session -d -s conductr-<tag>`.
+2. **Health check** — classifies the session via the same heuristics as
+   `conductr diagnose`.
+   - `working` → logs "already busy" and exits 0 (next tick will retry).
+   - `crashed` → restarts Claude before sending the prompt.
+   - `idle` or `created` → proceeds to send the orchestrate prompt.
+3. **Orchestrate trigger** — sends
+   `conductr orchestrate --repo <owner/repo> --once` as the user prompt.
+   With `--continuous`, the `--once` flag is omitted and Claude drives its
+   own polling loop.
+4. **Exits 0** — whether it acted or skipped. Non-zero only on real errors
+   (tmux not installed, bad config, etc.).
+
+**Auto mode** is enabled via the `--dangerously-skip-permissions` CLI flag
+passed to Claude Code on startup. This makes Claude auto-approve all tool
+calls — the right choice for unattended cron operation.
+
+**Remote control** is tmux-based: `conductr begin` uses
+`tmux send-keys` to inject the orchestrate prompt into the session's active
+pane, exactly as `conductr heal` and `conductr save-state` do.
+
+**Lockfile** at `~/.conductr/begin-<tag>.lock` (PID-based) prevents two
+cron ticks from racing on the same tag. A stale lock (PID dead) is silently
+reaped and the tick proceeds.
+
+Use `--dry-run` to inspect the current session state and see the plan
+without touching tmux:
+
+```bash
+conductr begin --tag conductr --repo Luan-vP/conductr --dry-run
+# plan: session 'conductr-conductr' does not exist
+# plan: cwd = /home/user/conductr
+# plan:  would create session 'conductr-conductr'
+# plan:  would start Claude: `claude --dangerously-skip-permissions`
+# plan:  would send: `conductr orchestrate --repo Luan-vP/conductr --once`
+```
+
+**Relationship to #19 (tempo):** use your project's tempo bucket to pick
+the cron interval — e.g. a 30-minute tempo maps to `*/30 * * * *`.
+
+**Relationship to #22 (tag namespacing):** `--tag` is currently a free
+string; once #22 lands the convention will be documented there and `begin`
+will consume whatever `--tag` semantics #22 defines.
 
 ### Orchestrate
 
