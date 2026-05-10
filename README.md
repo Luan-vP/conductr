@@ -36,6 +36,14 @@ vendor/
 > describes auto-merging behaviour that is prompt-injection-prone; we ported
 > the algorithm into Rust code rather than loading the markdown into an LLM.
 
+## Setup
+
+```bash
+git clone --recurse-submodules https://github.com/Luan-vP/conductr.git
+cd conductr && cargo build --workspace --release
+./target/release/conductr --help
+```
+
 ## Build
 
 ```bash
