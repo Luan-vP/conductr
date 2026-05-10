@@ -1,0 +1,10 @@
+[package]
+name = "conductr-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core types and port traits for conductr"
+
+[dependencies]
+serde = { workspace = true }
