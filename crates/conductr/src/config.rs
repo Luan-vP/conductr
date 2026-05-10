@@ -14,7 +14,7 @@ pub struct LocalSection {
     pub model: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct CiSection {
     /// Ordered command list. First non-zero exit = Failing. All zero = Passing.
     #[serde(default)]
@@ -25,6 +25,12 @@ pub struct CiSection {
     /// How to resolve local vs GitHub CI status.
     #[serde(default)]
     pub mode: CiMode,
+}
+
+impl Default for CiSection {
+    fn default() -> Self {
+        Self { commands: Vec::new(), timeout_secs: default_timeout_secs(), mode: CiMode::default() }
+    }
 }
 
 fn default_timeout_secs() -> u64 { 900 }
