@@ -25,8 +25,10 @@ only handles the local-tmux pod.
 - `conductr` on `$PATH` (`cargo install --path crates/conductr` from the repo).
 - `tmux` running with the user's pod sessions. Pod sessions are matched by
   name substring; default is `claude`.
-- For `save-state`: `br` (beads) installed and a beads database initialised in
-  `~/.beads` or the current directory.
+- For `save-state --tracker beads` (default): `br` (beads) installed and a
+  beads database initialised in `~/.beads` or the current directory.
+- For `save-state --tracker notion`: `NOTION_API_KEY` set and
+  `--notion-database <id>` supplied (or `CONDUCTR_NOTION_DATABASE` env var).
 
 If any of these are missing, *say so to the user and stop* — do not silently
 fall back to ad-hoc tmux scripting.
@@ -60,10 +62,14 @@ a new skill), use `save-state` instead.
 ### save-state
 
 ```
-conductr save-state                 # capture work, write beads issues, restart
-conductr save-state --dry-run       # plan only, no writes, no restarts
-conductr save-state --no-restart    # capture only, leave panes running
+conductr save-state                                        # capture work, write beads issues, restart
+conductr save-state --tracker beads                       # explicit beads (default)
+conductr save-state --tracker notion --notion-database <id>  # write to Notion database
+conductr save-state --dry-run                             # plan only, no writes, no restarts
+conductr save-state --no-restart                          # capture only, leave panes running
 ```
+
+`--tracker notion` also accepts the database ID via `CONDUCTR_NOTION_DATABASE` (env var).
 
 Output is a JSON manifest with one entry per pod session:
 
@@ -74,29 +80,42 @@ Output is a JSON manifest with one entry per pod session:
   "cwd": "/home/dev/developer/foo",
   "last_message": "try out the conductor",
   "tail": ["...", "..."],
-  "beads_id": "br-thread-recovery-...",   // null if no recoverable work
+  "tracker": "beads",                      // "beads" or "notion"
+  "tracker_id": "br-thread-recovery-...", // null if no recoverable work or --dry-run
   "restart": "restarted:exit-then-relaunch"
 }
 ```
 
-**Your job around `save-state`:** the binary deliberately stops at beads. If
-the user has Notion tickets that mirror their beads work, *you* update those
-tickets too — the binary doesn't ship a Notion connector for this flow. The
-contract is:
+**Your job around `save-state`:** behaviour depends on which tracker was used.
+
+#### When `tracker == "beads"` (default)
+
+The binary wrote the recovery issue to beads. If the user has Notion tickets
+that mirror their beads work, *you* update those tickets — the binary didn't
+do it. The contract is:
 
 1. Run `conductr save-state --json` (or `--dry-run` first if the user wants a
    preview).
 2. Parse the manifest.
-3. For each entry where `beads_id` is non-null:
+3. For each entry where `tracker_id` is non-null and `tracker == "beads"`:
    - If a Notion mirror page/database is configured (ask the user once per
      session if not), upsert a Notion record with the same title/body and a
-     link back to the beads id. Use `mcp__claude_ai_Notion__notion-search`
-     to find an existing page by `beads_id`, then `notion-update-page` or
+     link back to the tracker id. Use `mcp__claude_ai_Notion__notion-search`
+     to find an existing page by `tracker_id`, then `notion-update-page` or
      `notion-create-pages` accordingly.
    - If you have no Notion access in this session, *say so* and skip — do
      not pretend it succeeded.
-4. Report a final table: session → beads id → notion page url → restart
+4. Report a final table: session → tracker id → notion page url → restart
    action.
+
+#### When `tracker == "notion"`
+
+The binary already wrote the recovery issue directly into Notion. You do **not**
+need to mirror anything. Just report the results from the manifest.
+
+1. Run `conductr save-state --tracker notion --notion-database <id> --json`.
+2. Parse the manifest.
+3. Report a final table: session → tracker id → restart action.
 
 ### Restart semantics
 
