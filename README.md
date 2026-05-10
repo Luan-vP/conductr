@@ -276,10 +276,40 @@ The `conductr-instance` crate currently exposes the trait surface
 and a `StubManager` that returns `NotImplemented`. The full provider impls
 will be ported once `vendor/agentic` is wired up.
 
+## Bootstrap
+
+To bring any repository to **L5 Orchestrated** and hand it off to `conductr begin`:
+
+```bash
+conductr setup wizard            # step through the maturity checklist
+conductr setup status            # verify: should report L5 Orchestrated
+```
+
+The wizard automates fixable checks (CI workflow, `.gitignore`, CODEOWNERS,
+`.github/workflows/claude.yml`) and prints a URL for the one manual step
+(installing the Claude GitHub App).
+
+Once the repo reaches L5, create `.conductr` at the repo root (see the file
+in this repo for the canonical schema), then add a cron line:
+
+```cron
+0 */4 * * * conductr begin --tag <tag> --repo <owner/repo>
+```
+
+**This repo** is bootstrapped as:
+
+```cron
+0 */4 * * * conductr begin --tag conductr --repo Luan-vP/conductr
+```
+
+Project configuration lives in `.conductr` at the repo root. `[tempo]` entries
+are appended after each successful orchestrate pass.
+
 ## Project layout
 
 ```text
 .
+├── .conductr                        # project config (tag, band, tempo log)
 ├── Cargo.toml                       # workspace root
 ├── README.md
 ├── .claude/
