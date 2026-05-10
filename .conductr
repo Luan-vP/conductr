@@ -14,8 +14,8 @@ human_assignee = "Luan-vP"
 # a future `conductr setup cron` pass will sync the active crontab to match
 # this object. Add a key per task you want scheduled.
 #
-# orchestrate: every 2h at the top of the hour (12 bars × 2 h).
-orchestrate = "0 */2 * * *"
+# orchestrate: every 30 minutes.
+orchestrate = "*/30 * * * *"
 
 [tempo]
 # Completed orchestrate bars are appended here after each successful pass.
