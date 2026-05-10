@@ -9,12 +9,15 @@ repo = "Luan-vP/conductr"
 agents         = ["claude"]
 human_assignee = "Luan-vP"
 
-[tempo]
-# Cron cadence: one orchestrate pass every 4 hours (6 bars × 4 h).
-# Install on the host:
-#   crontab -e
-#   0 */4 * * * conductr begin --tag conductr --repo Luan-vP/conductr
+[cadence]
+# Per-task cron expressions. The host crontab is the source of truth for now;
+# a future `conductr setup cron` pass will sync the active crontab to match
+# this object. Add a key per task you want scheduled.
 #
+# orchestrate: every 2h at the top of the hour (12 bars × 2 h).
+orchestrate = "0 */2 * * *"
+
+[tempo]
 # Completed orchestrate bars are appended here after each successful pass.
 # Format: { ts = "ISO-8601", merged = N, triggered = N }
 entries = []
