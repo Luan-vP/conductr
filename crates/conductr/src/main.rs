@@ -1,4 +1,4 @@
-//! `conductr` CLI: orchestrate, instance, schedule, tasks, setup.
+//! `conductr` CLI: orchestrate, instance, schedule, tasks, setup, mail.
 
 mod wiring;
 
@@ -7,9 +7,13 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use conductr_adapters::gh_cli::GhCli;
+use conductr_adapters::mail_fs::FsMailbox;
 use conductr_adapters::tmux::Tmux;
 use conductr_adapters::{beads::Beads, notion::Notion};
-use conductr_core::ports::TmuxAgent;
+use conductr_core::ports::{Mailbox, TmuxAgent};
+use conductr_core::types::MailKind;
+use conductr_mail::dedup::check_scope;
+use conductr_mail::synthesise::request_synthesis;
 use conductr_orchestrate::{Orchestrator, OrchestratorConfig, RepoSlug};
 use conductr_pod::{
     diagnose_all, diagnose_one, ensure_session, heal_all, pick_idle, Diagnosis, FreeOpts, Health,
@@ -50,6 +54,8 @@ enum Cmd {
     SaveState(SaveStateArgs),
     /// Check and improve repository maturity (setup wizard).
     Setup(SetupArgs),
+    /// Agent mail: scope-dedup and synthesis bulletin board.
+    Mail(MailArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -251,6 +257,7 @@ async fn main() -> Result<()> {
         Cmd::Heal(a) => run_heal(a).await,
         Cmd::SaveState(a) => run_save_state(a).await,
         Cmd::Setup(a) => run_setup(a).await,
+        Cmd::Mail(a) => run_mail(a).await,
     }
 }
 
@@ -747,6 +754,166 @@ async fn restart_session(tmux: &Tmux, d: &Diagnosis, command: &str) -> Result<St
             Ok("restarted:exit-then-relaunch".into())
         }
     }
+}
+
+// ── Mail ──────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Parser)]
+struct MailArgs {
+    #[command(subcommand)]
+    cmd: MailCmd,
+    /// Mail directory (default: `.conductr/mail`).
+    #[arg(long, global = true)]
+    mail_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+enum MailCmd {
+    /// Send a mail message to the shared inbox.
+    Send {
+        /// Kind of message to send.
+        #[arg(long, value_name = "KIND")]
+        kind: String,
+        /// Issue number this message is about.
+        #[arg(long)]
+        issue: u64,
+        /// Comma-separated list of files (for scope-claim).
+        #[arg(long)]
+        files: Option<String>,
+        /// Short summary text.
+        #[arg(long)]
+        summary: Option<String>,
+        /// Your agent identifier (defaults to the current username).
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// List messages in the inbox.
+    Inbox {
+        /// Filter by message kind (e.g. `scope-claim`).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Only show messages sent within this duration (e.g. `1h`, `30m`, `7d`).
+        #[arg(long)]
+        since: Option<String>,
+    },
+    /// Check whether an issue has overlapping scope claims in the mailbox.
+    Dedup {
+        /// Issue number to check.
+        #[arg(long)]
+        issue: u64,
+        /// Comma-separated list of candidate files.
+        #[arg(long)]
+        files: Option<String>,
+    },
+    /// Request synthesis of two or more PRs for the same issue.
+    Synthesise {
+        /// Issue number the PRs address.
+        #[arg(long)]
+        issue: u64,
+        /// Comma-separated PR numbers to synthesise.
+        #[arg(long)]
+        prs: String,
+        /// Your agent identifier (defaults to the current username).
+        #[arg(long)]
+        agent: Option<String>,
+    },
+}
+
+async fn run_mail(args: MailArgs) -> Result<()> {
+    let dir = args
+        .mail_dir
+        .unwrap_or_else(FsMailbox::default_path);
+    let mailbox = FsMailbox::new(dir);
+
+    match args.cmd {
+        MailCmd::Send { kind, issue, files, summary, agent } => {
+            let agent = agent.unwrap_or_else(whoami_or_default);
+            let payload = build_mail_kind(&kind, issue, files.as_deref(), summary.as_deref())?;
+            let id = mailbox.send(&agent, payload).await?;
+            println!("sent: {id}");
+        }
+        MailCmd::Inbox { kind, since } => {
+            let since_dur = since.as_deref().map(parse_duration).transpose()?;
+            let messages = mailbox.inbox(kind.as_deref(), since_dur).await?;
+            println!("{}", serde_json::to_string_pretty(&messages)?);
+        }
+        MailCmd::Dedup { issue, files } => {
+            let files_vec: Vec<String> = files
+                .as_deref()
+                .map(|f| f.split(',').map(|s| s.trim().to_string()).collect())
+                .unwrap_or_default();
+            let report = check_scope(&mailbox, issue, &files_vec).await;
+            println!("{}", serde_json::to_string_pretty(&match report {
+                conductr_mail::dedup::ScopeReport::Clear => serde_json::json!({ "overlap": false }),
+                conductr_mail::dedup::ScopeReport::Overlap { existing_message_id, conflicting_files } => {
+                    serde_json::json!({
+                        "overlap": true,
+                        "existing_message_id": existing_message_id,
+                        "conflicting_files": conflicting_files,
+                    })
+                }
+            })?);
+        }
+        MailCmd::Synthesise { issue, prs, agent } => {
+            let agent = agent.unwrap_or_else(whoami_or_default);
+            let pr_numbers: Vec<u64> = prs
+                .split(',')
+                .map(|s| s.trim().parse::<u64>())
+                .collect::<std::result::Result<_, _>>()
+                .with_context(|| format!("invalid PR list: {prs}"))?;
+            let id = request_synthesis(&mailbox, &agent, issue, pr_numbers).await?;
+            println!("synthesis requested: {id}");
+        }
+    }
+    Ok(())
+}
+
+fn whoami_or_default() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown-agent".into())
+}
+
+fn build_mail_kind(
+    kind: &str,
+    issue: u64,
+    files: Option<&str>,
+    summary: Option<&str>,
+) -> Result<MailKind> {
+    match kind {
+        "scope-claim" | "scope_claim" => {
+            let files_vec: Vec<String> = files
+                .unwrap_or("")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            Ok(MailKind::ScopeClaim {
+                issue,
+                files: files_vec,
+                summary: summary.unwrap_or("").to_string(),
+            })
+        }
+        "note" => Ok(MailKind::Note { text: summary.unwrap_or("").to_string() }),
+        other => anyhow::bail!("unknown mail kind: {other}. Valid: scope-claim, note"),
+    }
+}
+
+fn parse_duration(s: &str) -> Result<std::time::Duration> {
+    let s = s.trim();
+    if let Some(n) = s.strip_suffix('d') {
+        return Ok(std::time::Duration::from_secs(n.parse::<u64>()? * 86400));
+    }
+    if let Some(n) = s.strip_suffix('h') {
+        return Ok(std::time::Duration::from_secs(n.parse::<u64>()? * 3600));
+    }
+    if let Some(n) = s.strip_suffix('m') {
+        return Ok(std::time::Duration::from_secs(n.parse::<u64>()? * 60));
+    }
+    if let Some(n) = s.strip_suffix('s') {
+        return Ok(std::time::Duration::from_secs(n.parse::<u64>()?));
+    }
+    anyhow::bail!("cannot parse duration: {s}. Use e.g. 1h, 30m, 7d, 90s")
 }
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
