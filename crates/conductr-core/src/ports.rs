@@ -83,6 +83,7 @@ pub trait TmuxAgent: Send + Sync {
     async fn capture_pane(&self, session: &str) -> Result<String, TmuxError>;
     async fn send_line(&self, session: &str, text: &str) -> Result<(), TmuxError>;
     async fn send_key(&self, session: &str, key: &str) -> Result<(), TmuxError>;
+    async fn new_session(&self, name: &str, cwd: &str) -> Result<(), TmuxError>;
 }
 
 // ── InstanceProvider ──────────────────────────────────────────────────────────

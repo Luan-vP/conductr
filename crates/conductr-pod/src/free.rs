@@ -22,7 +22,7 @@ pub fn pick_idle<'a>(diagnoses: &'a [Diagnosis], opts: &FreeOpts) -> Option<&'a 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tmux::TmuxSession;
+    use conductr_core::types::TmuxSession;
     use chrono::Utc;
 
     fn make(name: &str, health: Health, idle_seconds: i64, attached: bool) -> Diagnosis {
