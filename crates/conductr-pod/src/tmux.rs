@@ -5,37 +5,10 @@
 
 use std::process::Stdio;
 
-use chrono::{DateTime, TimeZone, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::{TimeZone, Utc};
 use tokio::process::Command;
 
-#[derive(Debug, thiserror::Error)]
-pub enum TmuxError {
-    #[error("`tmux` not found on PATH")]
-    NotInstalled,
-    #[error("no tmux server running")]
-    NoServer,
-    #[error("`tmux {args}` exited with {status}: {stderr}")]
-    Exit {
-        args: String,
-        status: std::process::ExitStatus,
-        stderr: String,
-    },
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("parse: {0}")]
-    Parse(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TmuxSession {
-    pub name: String,
-    pub created: DateTime<Utc>,
-    pub last_activity: DateTime<Utc>,
-    pub windows: u32,
-    pub attached: bool,
-    pub cwd: Option<String>,
-}
+pub use conductr_core::types::{TmuxError, TmuxSession};
 
 #[derive(Debug, Clone, Default)]
 pub struct Tmux {
@@ -83,9 +56,6 @@ impl Tmux {
 
     /// `tmux list-sessions` parsed into structured form.
     pub async fn list_sessions(&self) -> Result<Vec<TmuxSession>, TmuxError> {
-        // tmux's `-F` output escapes unprintable bytes (e.g. 0x1F renders as
-        // `\037`), so we use a tab separator. Session names can't contain
-        // whitespace and `pane_current_path` won't realistically contain a tab.
         let fmt = "#{session_name}\t#{session_created}\t#{session_activity}\t#{session_windows}\t#{session_attached}\t#{pane_current_path}";
         let raw = match self.run(&["list-sessions", "-F", fmt]).await {
             Ok(s) => s,

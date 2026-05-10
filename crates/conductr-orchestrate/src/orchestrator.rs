@@ -1,7 +1,6 @@
 //! Top-level orchestration loop.
 
 use std::collections::BTreeSet;
-use std::time::Duration;
 
 use tracing::{info, warn};
 
@@ -9,48 +8,11 @@ use crate::classifier::{classify, Bucket, Classification};
 use crate::github::GitHubClient;
 use crate::types::{IssueNumber, RepoSlug};
 
-#[derive(Debug, Clone)]
-pub struct OrchestratorConfig {
-    pub repo: RepoSlug,
-    /// Comment text used to trigger the bot.
-    pub trigger_comment: String,
-    /// Polling interval between cycles.
-    pub poll_interval: Duration,
-    /// Max cycles to run before giving up (None = unbounded).
-    pub max_cycles: Option<u32>,
-    /// Default human assignee if CODEOWNERS resolution is unavailable.
-    pub default_human_assignee: Option<String>,
-    /// If true, only print the plan; do not actually comment / merge.
-    pub dry_run: bool,
-}
-
-impl OrchestratorConfig {
-    pub fn new(repo: RepoSlug) -> Self {
-        Self {
-            repo,
-            trigger_comment: "@claude please implement".into(),
-            poll_interval: Duration::from_secs(60),
-            max_cycles: None,
-            default_human_assignee: None,
-            dry_run: false,
-        }
-    }
-}
+pub use conductr_core::types::{CycleReport, OrchestratorConfig};
 
 pub struct Orchestrator<C: GitHubClient> {
     pub client: C,
     pub config: OrchestratorConfig,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct CycleReport {
-    pub merged: Vec<u64>,
-    pub triggered: Vec<IssueNumber>,
-    pub waiting: Vec<IssueNumber>,
-    pub blocked: Vec<IssueNumber>,
-    pub human: Vec<IssueNumber>,
-    pub pr_failing: Vec<u64>,
-    pub progress_made: bool,
 }
 
 impl<C: GitHubClient> Orchestrator<C> {
@@ -67,7 +29,6 @@ impl<C: GitHubClient> Orchestrator<C> {
         let closed = self.client.list_closed_issue_numbers(repo).await?;
         let prs = self.client.list_open_prs(repo).await?;
 
-        // Determine which issues have already been triggered by scanning their comments.
         let mut triggered: BTreeSet<IssueNumber> = BTreeSet::new();
         for issue in &open_issues {
             let comments = self.client.list_issue_comments(repo, issue.number).await.unwrap_or_default();

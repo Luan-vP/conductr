@@ -13,6 +13,7 @@ pub mod diagnose;
 pub mod heal;
 pub mod tmux;
 
-pub use diagnose::{diagnose_all, diagnose_one, Diagnosis, Health};
+pub use conductr_core::types::*;
+pub use diagnose::{diagnose_all, diagnose_one};
 pub use heal::{heal_all, HealOutcome, HealPlan};
-pub use tmux::{Tmux, TmuxError, TmuxSession};
+pub use tmux::Tmux;

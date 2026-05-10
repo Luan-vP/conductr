@@ -7,8 +7,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::diagnose::{diagnose_all, Diagnosis, Health};
-use crate::tmux::{Tmux, TmuxError};
+use conductr_core::types::{Diagnosis, Health, TmuxError};
+
+use crate::diagnose::diagnose_all;
+use crate::tmux::Tmux;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealPlan {

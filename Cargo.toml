@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/conductr",
+    "crates/conductr-core",
     "crates/conductr-orchestrate",
     "crates/conductr-instance",
     "crates/conductr-pod",
@@ -33,6 +34,7 @@ url = "2"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 
+conductr-core        = { path = "crates/conductr-core",        version = "0.1.0" }
 conductr-orchestrate = { path = "crates/conductr-orchestrate", version = "0.1.0" }
 conductr-instance    = { path = "crates/conductr-instance",    version = "0.1.0" }
 conductr-pod         = { path = "crates/conductr-pod",         version = "0.1.0" }

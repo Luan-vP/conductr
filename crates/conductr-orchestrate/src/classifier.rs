@@ -5,24 +5,7 @@ use std::collections::BTreeSet;
 use crate::deps::parse_dependencies;
 use crate::types::{CiStatus, Issue, IssueNumber, IssueState, Pr, PrState};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Bucket {
-    Ready,
-    PrOpen,
-    PrFailing,
-    Blocked,
-    TriggeredWaiting,
-    Human,
-    AlreadyClosed,
-}
-
-#[derive(Debug, Clone)]
-pub struct Classification {
-    pub issue: IssueNumber,
-    pub bucket: Bucket,
-    pub blocking: Vec<IssueNumber>,
-    pub pr: Option<u64>,
-}
+pub use conductr_core::types::{Bucket, Classification};
 
 /// Classify a single issue given the surrounding state.
 ///
