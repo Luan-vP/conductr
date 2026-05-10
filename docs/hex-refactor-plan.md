@@ -91,25 +91,34 @@ over a `GitHub` trait). Push that pattern through every crate.
 ## Migration steps
 
 Foundation, then adapters, then use-case rewires, then the binary, then
-docs. Eight tickets, six topological batches.
+docs. Eight tickets in the main hex track, plus three independent tickets
+(T9–T11) that share the foundation but otherwise run on their own.
 
 ```
             T1 (core: types + ports)
                     │
-                    ▼
-            T2 (adapters: tmux, beads, notion, gh-cli, mock)
-                    │
-        ┌───────────┼───────────┬───────────┐
-        ▼           ▼           ▼           ▼
-       T3 pod      T4 tasks   T5 orch    T6 instance
-        │           │           │           │
-        └───────────┴─────┬─────┴───────────┘
-                          ▼
-                    T7 (binary: wire it up,
-                        save-state --tracker)
-                          │
-                          ▼
-                    T8 (base.md + README)
+        ┌───────────┴───────────────────────────────┐
+        ▼                                           │
+        T2 (adapters: tmux, beads, notion,          │
+            gh-cli, mock)                           │
+        │                                           │
+   ┌────┴────┬───────────┬───────────┐              │
+   ▼         ▼           ▼           ▼              │
+   T3 pod   T4 tasks    T5 orch    T6 instance      │
+   │         │           │           │              │
+   └─────────┴─────┬─────┴───────────┘              │
+                   ▼                                │
+              T7 (binary: wire it up,               │
+                  save-state --tracker)             │
+                   │                                │
+                   ▼                                │
+              T8 (base.md + README)                 │
+                                                    │
+  Independent track (each depends only on T1):      │
+                                                    │
+                          T9   agent mail ──────────┤
+                          T10  maturity wizard ─────┤
+                          T11  plan → sheet music ──┘
 ```
 
 ## Tickets
@@ -576,3 +585,265 @@ in the right mental model.
 **Out of scope:**
 - Generating per-issue ARNs (that's the architect's job, not this
   ticket).
+
+---
+
+### T9 — Agent mail: scope-dedup and parallel-synthesis substrate
+
+**Depends on:** T1 (uses core types).
+
+**Why:** Today nothing prevents two agents from independently working on
+overlapping scope, and once they do there's no mechanism to compare and
+synthesise their outputs. `conductr mail` is the shared bulletin board
+that fixes both: agents publish what they're working on (so others can
+see overlap before they start), and once parallel PRs exist for the same
+issue, a synthesiser agent reads them through the mailbox and proposes a
+merged solution.
+
+**Two consumers, one substrate:**
+- *Scope dedup* — before triggering implementation, the orchestrator
+  scans recent mail for in-scope claims that overlap with the candidate
+  issue and either skips, merges, or assigns differently.
+- *Synthesis* — when ≥2 PRs exist for the same issue (e.g. someone ran
+  `/orchestrate` twice, or two agents raced), a synthesis flow reads
+  both diffs from mail and produces a third PR that picks the strongest
+  parts of each.
+
+**Files to create:**
+- `crates/conductr-core/src/types.rs` — add:
+  ```rust
+  pub struct MailMessage {
+      pub id: String,                // ULID-ish, server-assigned
+      pub from: AgentId,
+      pub kind: MailKind,
+      pub subject: String,
+      pub body: String,
+      pub refs: Vec<MailRef>,        // issue/pr/file pointers
+      pub posted_at: DateTime<Utc>,
+      pub thread_id: Option<String>, // groups replies
+  }
+  pub enum MailKind {
+      ScopeClaim { issue: u64, files: Vec<String>, summary: String },
+      SynthesisRequest { issue: u64, pr_numbers: Vec<u64> },
+      SynthesisProposal { issue: u64, pr_numbers: Vec<u64>, diff_url: Option<String> },
+      Note,
+  }
+  pub enum MailRef { Issue(u64), Pr(u64), File(String), Message(String) }
+  pub struct AgentId(pub String);    // e.g. "claude-thread4@host" or "github-bot"
+  ```
+- `crates/conductr-core/src/ports.rs` — add `Mailbox` port:
+  ```rust
+  #[async_trait]
+  pub trait Mailbox: Send + Sync {
+      async fn send(&self, msg: &MailMessage) -> Result<String, MailboxError>;
+      async fn inbox(&self, since: Option<DateTime<Utc>>, kinds: &[MailKindFilter])
+          -> Result<Vec<MailMessage>, MailboxError>;
+      async fn thread(&self, thread_id: &str) -> Result<Vec<MailMessage>, MailboxError>;
+  }
+  ```
+- `crates/conductr-mail/` (new use-case crate) with:
+  - `src/dedup.rs` — `pub async fn check_scope(mailbox: &impl Mailbox,
+    issue: u64, candidate_files: &[String]) -> ScopeReport` returns
+    overlapping ScopeClaim messages.
+  - `src/synthesise.rs` — `pub async fn request_synthesis(mailbox: &impl
+    Mailbox, issue: u64, pr_numbers: Vec<u64>) -> Result<String, ...>`
+    posts a SynthesisRequest message and returns its id. The actual diff
+    synthesis is done by a Claude agent reading the message; this crate
+    just brokers the request.
+- `crates/conductr-adapters/src/mail_fs.rs` (behind feature
+  `mail-fs`) — first adapter implementation: append-only JSONL files
+  under `.conductr/mail/<thread>.jsonl`. Good enough for single-host
+  experimentation.
+- `crates/conductr-adapters/src/mail_github.rs` (behind feature
+  `mail-github`) — second adapter: maps `MailMessage` to a GitHub
+  Discussion or to comments on a sentinel issue (one issue per repo,
+  e.g. `#0` titled `agent-mail`). Use whichever the repo configures.
+- `crates/conductr-adapters/src/mock.rs` — extend with `MockMailbox`.
+
+**CLI surface:**
+- `conductr mail send --kind scope-claim --issue <N> --files
+  <a,b,c> --summary <s>`
+- `conductr mail inbox [--kind <k>] [--since <duration>]`
+- `conductr mail dedup --issue <N> [--files <a,b,c>]` — runs
+  `dedup::check_scope` and prints overlapping claims.
+- `conductr mail synthesise --issue <N> --prs <p1,p2,...>` — posts a
+  SynthesisRequest and returns the message id.
+
+**Hook into orchestrator:**
+- `conductr-orchestrate` gains an *optional* `&dyn Mailbox` on the
+  `Orchestrator`. When present, `run_cycle` calls
+  `dedup::check_scope` for each Ready issue before triggering and skips
+  with `Bucket::ScopeOverlap { existing_message_id }` if a match is
+  found. Without a mailbox the behaviour is unchanged.
+
+**Acceptance:**
+- `conductr mail send` and `conductr mail inbox` round-trip a message
+  through both `mail-fs` and `mail-github` adapters.
+- A unit test on `dedup::check_scope` returns the expected overlaps for
+  a `MockMailbox` populated with two ScopeClaim messages.
+- Running `conductr orchestrate --once` against a repo with an existing
+  ScopeClaim covering issue #N skips that issue with the new
+  `ScopeOverlap` bucket.
+
+**Out of scope:**
+- The actual LLM-side synthesis logic. We post the request; the
+  consuming agent does the merge. That's a skill change for a follow-up
+  ticket if needed.
+- Auth and ACLs on the mailbox. First-pass is single-tenant.
+
+---
+
+### T10 — Project maturity model + `conductr setup` wizard
+
+**Depends on:** T1.
+
+**Why:** Today the repo's "is it ready for `/orchestrate`?" answer is
+folklore (CI? `dev` branch? `.claude/base.md`? Claude GitHub App?
+CODEOWNERS? skills installed?). Encode it. The wizard walks the
+checklist on a target repo, reports a maturity level, and offers to
+install the missing pieces.
+
+**Files to create:**
+- `crates/conductr-core/src/types.rs` — add:
+  ```rust
+  pub struct MaturityCheck {
+      pub id: &'static str,                 // e.g. "ci-workflow"
+      pub level: MaturityLevel,
+      pub label: &'static str,
+      pub fixable: bool,
+  }
+  pub enum MaturityLevel { L0Bootstrap, L1Tested, L2GitFlow, L3Architected, L4Skilled, L5Orchestrated }
+  pub struct MaturityReport {
+      pub repo: PathBuf,
+      pub level_reached: MaturityLevel,
+      pub checks: Vec<MaturityCheckResult>,
+  }
+  pub struct MaturityCheckResult {
+      pub check: MaturityCheck,
+      pub passed: bool,
+      pub detail: Option<String>,
+  }
+  ```
+- `crates/conductr-setup/` (new use-case crate):
+  - `src/checks.rs` — one function per check. Each returns
+    `MaturityCheckResult`. The catalogue:
+    - **L1 Tested**: `cargo test --workspace` (or repo-language equiv)
+      runs locally; `.github/workflows/*.yml` runs tests on push;
+      `.gitignore` covers `target/`.
+    - **L2 GitFlow**: `dev` (or `develop`) branch exists; `main` is
+      protected; default base for PRs is `dev`; `git flow init` config
+      present (optional but nice).
+    - **L3 Architected**: `.claude/base.md` exists; `CONTRIBUTING.md`
+      mentions architecture conventions; `CODEOWNERS` present.
+    - **L4 Skilled**: at least one `skills/<name>/SKILL.md` shipped;
+      `.claude/agents/` populated as appropriate; the `conductr-pod`
+      skill is installed at `~/.claude/skills/` or available as a
+      plugin.
+    - **L5 Orchestrated**: Claude GitHub App installed on the repo;
+      `.github/workflows/claude.yml` workflow present (the bot's entry
+      point); a green run of `conductr orchestrate --once --dry-run`.
+  - `src/fixes.rs` — one function per *fixable* check. Each does the
+    minimal thing to flip the check from failing to passing:
+    - `add_ci_workflow()` writes `.github/workflows/test.yml`.
+    - `init_git_flow()` creates `dev` branch off `main`, sets it as
+      default with `gh repo edit --default-branch dev` (asks first).
+    - `add_codeowners()` writes a starter `CODEOWNERS`.
+    - `install_claude_app()` *opens* the install URL
+      (`https://github.com/apps/claude` or the user's configured app)
+      in the browser and prints follow-up steps; never tries to
+      auto-install.
+    - `add_claude_workflow()` writes `.github/workflows/claude.yml` from
+      a template.
+  - `src/wizard.rs` — `pub async fn run(repo: &Path, mode: WizardMode) ->
+    Result<MaturityReport>` with `WizardMode { Interactive,
+    NonInteractive, DryRun }`. Interactive prompts before each fix;
+    NonInteractive fixes everything fixable; DryRun reports without
+    writing.
+
+**CLI surface:**
+- `conductr setup status [--repo <path>]` — report only, no writes.
+- `conductr setup wizard [--repo <path>] [--non-interactive]
+  [--dry-run]` — walk the checklist and offer fixes.
+- `conductr setup install-claude-app` — directly invoke that fix.
+
+**Documentation deliverable:**
+- `docs/setup.md` — the human-readable form of the same checklist:
+  what each level means, why you'd want it, exactly what files / config
+  / external installs the wizard touches. The wizard's printed output
+  links to this doc per check.
+
+**Acceptance:**
+- `conductr setup status` against the current `conductr` repo prints a
+  truthful report (it should currently be ~L2 once the plan PR and the
+  CI workflow merge).
+- `conductr setup wizard --dry-run` against a fresh empty repo prints
+  the full set of fixes it would apply, with no side effects.
+- `conductr setup wizard --non-interactive` on a fresh empty test repo
+  brings it to L4 in one run (L5 needs the Claude App install which the
+  wizard cannot fully automate; it stops with a clear "open this URL"
+  message).
+- `docs/setup.md` is < 300 lines and includes a checklist a user can
+  tick off manually.
+
+**Out of scope:**
+- Language-agnostic checks (we're Rust-only for now). The CI check
+  encodes `cargo test` directly — multi-language support is later work.
+- Self-hosted GitHub Enterprise variations of the App install.
+
+---
+
+### T11 — `conductr schedule from-plan` (plan → sheet music)
+
+**Depends on:** T1.
+
+**Why:** The schedule crate already turns musical notation into ASCII
+timelines. Inverting the relationship — turning an *implementation plan*
+into a pattern — turns the dependency graph into something you can
+render, time, and (eventually) reason about as a piece of music.
+
+**The mapping:**
+- One *bar* per topological batch. Parallel work fits into the same
+  bar.
+- One *beat* per ticket inside the batch.
+- Note value per beat encodes the ticket's estimated weight:
+  - whole `w` ≥ 1 day
+  - half `h` ~ half day
+  - quarter `q` ~ 2 hours
+  - eighth `e` ~ 1 hour
+  - 16th `s` ~ 30 min
+  - 32nd `t` ~ 15 min
+- Beat *tag* is `<ticket-id>:<note-value>`, e.g. `T3:q`.
+- Subdivisions express ticket sub-tasks (`T3:q[design:e,impl:e]`).
+- Time signature follows the bar with the most beats; the renderer pads
+  shorter bars with `rest:<value>` to keep total bar duration constant.
+
+**Files to create:**
+- `crates/conductr-schedule/src/from_plan.rs`:
+  - `pub fn parse_plan(markdown: &str) -> Result<Plan, PlanError>` —
+    extracts ticket sections (`### T<n> — <title>`), their `Depends on:`
+    line, and an optional `Estimate:` line (default `q`).
+  - `pub fn plan_to_pattern(plan: &Plan) -> Pattern` — builds a
+    `Pattern` (the existing type) using the topo-batch / note-value
+    mapping above.
+  - `Plan` and `PlanItem` types live in this module (not core — they're
+    schedule-specific).
+- `crates/conductr/src/main.rs` — add the subcommand:
+  - `conductr schedule from-plan <path>` — parses the file, builds the
+    pattern, prints the pattern DSL.
+  - `conductr schedule from-plan <path> --render` — additionally
+    renders the ASCII timeline (existing `render_ascii`).
+
+**Acceptance:**
+- `conductr schedule from-plan docs/hex-refactor-plan.md --render`
+  produces a sensible timeline: one bar per batch, T3-T6 in the same
+  bar, T7 alone in the next bar, etc.
+- Round-trip property test: `parse(plan_to_pattern(plan).to_dsl())`
+  produces the same pattern (or, if that's painful, a structural-equality
+  test on the parsed pattern).
+- A snapshot test against `docs/hex-refactor-plan.md` (or a smaller
+  fixture) so renderer changes don't silently break the timeline.
+
+**Out of scope:**
+- Synchronising the plan with real wall-clock time. The pattern is a
+  *score*, not a Gantt — `quarter_duration` is the user's choice.
+- Bidirectional sync (pattern → plan). One-way is enough for now.
