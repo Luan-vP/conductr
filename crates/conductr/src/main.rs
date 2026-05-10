@@ -11,7 +11,9 @@ use conductr_pod::{
 };
 use conductr_schedule::{parse, parse_plan, pattern_to_dsl, plan_to_pattern, render_ascii};
 use conductr_setup::wizard::WizardMode;
-use conductr_tasks::beads::Beads;
+use conductr_adapters::beads::Beads;
+use conductr_adapters::notion::Notion;
+use conductr_tasks::sync::{create_task, list_tasks, sync_tasks};
 use serde::Serialize;
 
 #[derive(Debug, Parser)]
@@ -662,7 +664,7 @@ fn health_label(h: &Health) -> &'static str {
 }
 
 async fn create_recovery_issue(
-    beads: &Beads,
+    tracker: &impl conductr_core::ports::IssueTracker,
     d: &Diagnosis,
     summary: &str,
     priority: u8,
@@ -688,9 +690,8 @@ async fn create_recovery_issue(
         summary = summary,
         tail = d.tail.join("\n"),
     );
-    let labels = ["thread-recovery", &d.session.name];
-    let task = beads
-        .create_full(&title, Some(priority), Some(&body), &labels)
+    let labels = ["thread-recovery", d.session.name.as_str()];
+    let task = create_task(tracker, &title, Some(priority), Some(&body), &labels)
         .await
         .with_context(|| format!("creating beads recovery issue for {}", d.session.name))?;
     Ok(task.id)
@@ -898,18 +899,18 @@ async fn run_tasks(args: TasksArgs) -> Result<()> {
     let beads = Beads::new();
     match args.cmd {
         TasksCmd::List { ready } => {
-            let tasks = if ready { beads.list_ready().await? } else { beads.list().await? };
+            let tasks = list_tasks(&beads, ready).await?;
             println!("{}", serde_json::to_string_pretty(&tasks)?);
             Ok(())
         }
         TasksCmd::Create { title, priority } => {
-            let t = beads.create(&title, priority).await?;
+            let t = create_task(&beads, &title, priority, None, &[]).await?;
             println!("{}", serde_json::to_string_pretty(&t)?);
             Ok(())
         }
         TasksCmd::SyncToNotion { database } => {
-            let notion = conductr_tasks::notion::Notion::from_env()?;
-            let report = conductr_tasks::sync::beads_to_notion(&beads, &notion, &database).await?;
+            let notion = Notion::from_env()?.with_database(&database);
+            let report = sync_tasks(&beads, &notion, Some(&database)).await?;
             println!(
                 "pushed {} tasks ({} failed)",
                 report.pushed.len(),

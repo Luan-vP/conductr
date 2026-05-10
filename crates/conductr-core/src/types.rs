@@ -22,6 +22,12 @@ pub enum TaskStatus {
     Done,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SyncReport {
+    pub pushed: Vec<String>,
+    pub failed: Vec<(String, String)>,
+}
+
 // ── conductr-pod types ────────────────────────────────────────────────────────
 
 use chrono::{DateTime, Utc};

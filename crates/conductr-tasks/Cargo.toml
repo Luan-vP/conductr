@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Task tracking: beads (br) subprocess wrapper + Notion API client"
+description = "Task use-cases over the IssueTracker port"
 
 [dependencies]
 conductr-core = { workspace = true }
@@ -12,8 +12,9 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
-reqwest = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
-chrono = { workspace = true }
+
+[dev-dependencies]
+conductr-adapters = { workspace = true, features = ["mock"] }
+tokio = { workspace = true }
