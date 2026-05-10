@@ -1,0 +1,34 @@
+[package]
+name = "conductr-adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Feature-gated driven adapters implementing conductr-core port traits"
+
+[features]
+default = []
+tmux        = ["dep:tokio"]
+beads       = ["dep:tokio"]
+notion      = ["dep:tokio", "dep:reqwest", "dep:url"]
+gh-cli      = ["dep:tokio", "dep:once_cell", "dep:regex"]
+mock        = []
+full        = ["tmux", "beads", "notion", "gh-cli", "mock"]
+
+[dependencies]
+conductr-core = { workspace = true }
+thiserror     = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+async-trait   = { workspace = true }
+chrono        = { workspace = true }
+anyhow        = { workspace = true }
+
+tokio     = { workspace = true, optional = true }
+reqwest   = { workspace = true, optional = true }
+url       = { workspace = true, optional = true }
+once_cell = { workspace = true, optional = true }
+regex     = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
