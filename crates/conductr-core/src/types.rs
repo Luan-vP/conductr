@@ -306,7 +306,7 @@ pub struct InstanceHandle {
 
 #[derive(Debug, thiserror::Error)]
 pub enum InstanceError {
-    #[error("provider {0:?} not implemented yet (port from agentic)")]
+    #[error("provider {0:?} not implemented yet")]
     NotImplemented(Provider),
     #[error("ssh: {0}")]
     Ssh(String),

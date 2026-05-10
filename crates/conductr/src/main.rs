@@ -39,7 +39,7 @@ enum Cmd {
     Begin(BeginArgs),
     /// Drive `@claude` GitHub-issue orchestration (poorchestrator port).
     Orchestrate(OrchestrateArgs),
-    /// Cloud instance management (stubbed; agentic port pending).
+    /// Cloud instance management (stubbed).
     Instance(InstanceArgs),
     /// Musical-notation time patterns.
     Schedule(ScheduleArgs),
@@ -1256,7 +1256,7 @@ async fn run_instance(args: InstanceArgs) -> Result<()> {
     match args.cmd {
         InstanceCmd::SpinUp { name } => {
             anyhow::bail!(
-                "instance spin-up not implemented yet (port from agentic). Requested: {name}"
+                "instance spin-up not implemented yet. Requested: {name}"
             );
         }
         InstanceCmd::List => {

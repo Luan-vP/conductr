@@ -12,7 +12,7 @@ A Rust workspace that bundles four concerns into one CLI:
 | `conductr-core`         | Shared domain types and port traits (`IssueTracker`, `ScmHost`, `TmuxAgent`, `InstanceProvider`, `Mailbox`). No I/O. |
 | `conductr-adapters`     | Feature-gated concrete connectors (`tmux`, `beads`, `notion`, `gh-cli`, `mail-fs`, `mail-github`, `mock`). Enable all with `--features full`. |
 | `conductr-orchestrate`  | Port of [poorchestrator] — drive `@claude` GitHub-issue implementation in dependency order.  |
-| `conductr-instance`     | Cloud instance spin-up & SSH (port of `agentic`; **stubbed**).          |
+| `conductr-instance`     | Cloud instance spin-up & SSH (**stubbed**).                             |
 | `conductr-pod`          | Diagnose and heal the local Claude Code pod (tmux sessions on this host). |
 | `conductr-schedule`     | Time patterns described in **musical notation** (the seed concept).     |
 | `conductr-tasks`        | Task tracking via [beads_rust] (`br`, local SQLite + JSONL) and Notion. |
@@ -28,14 +28,6 @@ A Rust workspace that bundles four concerns into one CLI:
 vendor/
 ├── poorchestrator   # MIT — orchestrate skill we ported
 └── beads_rust       # MIT — `br` source, used as a CLI subprocess
-```
-
-`Luan-vP/agentic` is private; this sandbox lacks GitHub auth so it has not been
-added here. To add it locally:
-
-```bash
-git submodule add git@github.com:Luan-vP/agentic.git vendor/agentic
-git submodule update --init --recursive
 ```
 
 > **Security note.** Submodules are pinned to a commit SHA and `vendor/*` is
@@ -320,8 +312,8 @@ Override with `CONDUCTR_SCRIPTS_DIR=/path/to/scripts/local`.
 
 The `conductr-instance` crate currently exposes the trait surface
 (`InstanceManager` + `InstanceSpec` + `Provider::{Aws,Hetzner,DigitalOcean,Local}`)
-and a `StubManager` that returns `NotImplemented`. The full provider impls
-will be ported once `vendor/agentic` is wired up.
+and a `StubManager` that returns `NotImplemented`. Full provider impls are
+future work.
 
 ## Bootstrap
 

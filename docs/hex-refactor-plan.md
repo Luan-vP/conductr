@@ -480,8 +480,8 @@ core, `StubManager` moves to `conductr-adapters::mock`.
   - Re-export `InstanceProvider` from core.
   - Add a placeholder `pub async fn spin_up(provider: &impl
     InstanceProvider, spec: &InstanceSpec) -> ...` use-case if it makes
-    the binary cleaner; otherwise leave the crate empty pending the
-    `agentic` port.
+    the binary cleaner; otherwise leave the crate empty pending future
+    provider implementations.
 - `crates/conductr-instance/Cargo.toml`:
   - Keep deps minimal; add `conductr-core = { workspace = true }`.
 
@@ -489,7 +489,7 @@ core, `StubManager` moves to `conductr-adapters::mock`.
 - `crates/conductr/src/main.rs` `run_instance`:
   - Use `conductr_adapters::mock::MockInstanceProvider` for the `List`
     subcommand (still returns `[]`). For `SpinUp`, keep the existing
-    `bail!` until the agentic port lands.
+    `bail!` until provider implementations land.
 
 **Acceptance:**
 - Workspace builds and tests pass.
