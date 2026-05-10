@@ -5,3 +5,17 @@ Cargo.lock.bak
 .idea/
 .vscode/
 *.swp
+
+# Secrets / credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*
+secrets*
+
+# Local outputs
+coverage-reports/
