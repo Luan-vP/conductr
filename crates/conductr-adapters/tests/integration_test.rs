@@ -142,6 +142,23 @@ mod notion_tests {
     }
 }
 
+#[cfg(feature = "ollama")]
+mod ollama_tests {
+    use conductr_adapters::ollama::OllamaAdapter;
+    use conductr_core::ports::LocalAgent;
+
+    #[tokio::test]
+    #[ignore]
+    async fn ollama_complete_roundtrip() {
+        let adapter = OllamaAdapter::new("qwen3:27b");
+        let response = adapter
+            .complete("Reply with exactly the word 'hello' and nothing else.")
+            .await
+            .expect("ollama complete failed — is `ollama serve` running?");
+        assert!(!response.trim().is_empty(), "expected non-empty completion");
+    }
+}
+
 #[cfg(feature = "gh-cli")]
 mod gh_cli_tests {
     use conductr_adapters::gh_cli::{linked_issue_from, GhCli};

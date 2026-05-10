@@ -97,6 +97,24 @@ pub trait InstanceProvider: Send + Sync {
     async fn tear_down(&self, handle: &InstanceHandle) -> Result<(), InstanceError>;
 }
 
+// ── LocalAgent ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, thiserror::Error)]
+pub enum LocalAgentError {
+    #[error("agent not running or not reachable")]
+    NotRunning,
+    #[error("http: {0}")]
+    Http(String),
+    #[error("parse: {0}")]
+    Parse(String),
+}
+
+/// A locally-hosted LLM that can complete a single prompt.
+#[async_trait]
+pub trait LocalAgent: Send + Sync {
+    async fn complete(&self, prompt: &str) -> Result<String, LocalAgentError>;
+}
+
 // ── Mailbox ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, thiserror::Error)]

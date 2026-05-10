@@ -56,6 +56,8 @@ enum Cmd {
     Setup(SetupArgs),
     /// Agent mail: scope-dedup and synthesis bulletin board.
     Mail(MailArgs),
+    /// Local-agent utilities (Ollama, etc.).
+    Local(LocalArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -258,6 +260,7 @@ async fn main() -> Result<()> {
         Cmd::SaveState(a) => run_save_state(a).await,
         Cmd::Setup(a) => run_setup(a).await,
         Cmd::Mail(a) => run_mail(a).await,
+        Cmd::Local(a) => run_local(a).await,
     }
 }
 
@@ -1051,6 +1054,52 @@ async fn run_instance(args: InstanceArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+// ── Local ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Parser)]
+struct LocalArgs {
+    #[command(subcommand)]
+    cmd: LocalCmd,
+}
+
+#[derive(Debug, Subcommand)]
+enum LocalCmd {
+    /// Probe locally-running agents and print their status.
+    Detect(DetectArgs),
+}
+
+#[derive(Debug, Parser)]
+struct DetectArgs {
+    /// Ollama model tag to probe (default: `qwen3:27b`).
+    #[arg(long, default_value = "qwen3:27b")]
+    model: String,
+    /// Ollama server URL (overrides `OLLAMA_HOST`).
+    #[arg(long)]
+    ollama_host: Option<String>,
+}
+
+async fn run_local(args: LocalArgs) -> Result<()> {
+    match args.cmd {
+        LocalCmd::Detect(a) => run_local_detect(a).await,
+    }
+}
+
+async fn run_local_detect(args: DetectArgs) -> Result<()> {
+    let adapter = match &args.ollama_host {
+        Some(host) => {
+            conductr_adapters::ollama::OllamaAdapter::with_host(&args.model, host.clone())
+        }
+        None => conductr_adapters::ollama::OllamaAdapter::new(&args.model),
+    };
+
+    match adapter.ping().await {
+        Ok(()) => println!("ollama-adapter: ok  (model={}, host={})", adapter.model, adapter.host),
+        Err(e) => println!("ollama-adapter: err  ({e})"),
+    }
+
+    Ok(())
 }
 
 fn run_schedule(args: ScheduleArgs) -> Result<()> {
