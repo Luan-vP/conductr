@@ -1,5 +1,6 @@
-//! `conductr` CLI: orchestrate, instance, schedule, tasks, setup, mail, local.
+//! `conductr` CLI: orchestrate, instance, schedule, tasks, setup, mail, local, cadence.
 
+mod cadence;
 mod local_detect;
 mod wiring;
 
@@ -59,6 +60,30 @@ enum Cmd {
     Mail(MailArgs),
     /// Local AI agent providers: detect installed runtimes and models, install setup scripts.
     Local(LocalArgs),
+    /// Sync the host crontab from `.conductr [cadence]`.
+    Cadence(CadenceArgs),
+}
+
+#[derive(Debug, Parser)]
+struct CadenceArgs {
+    #[command(subcommand)]
+    cmd: CadenceCmd,
+}
+
+#[derive(Debug, Subcommand)]
+enum CadenceCmd {
+    /// Apply or update host crontab entries from `.conductr [cadence]`.
+    Sync(CadenceSyncArgs),
+}
+
+#[derive(Debug, Parser)]
+struct CadenceSyncArgs {
+    /// Path to the repo containing `.conductr` (defaults to current directory).
+    #[arg(long)]
+    repo: Option<PathBuf>,
+    /// Print the planned crontab without writing.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -262,6 +287,7 @@ async fn main() -> Result<()> {
         Cmd::Setup(a) => run_setup(a).await,
         Cmd::Mail(a) => run_mail(a).await,
         Cmd::Local(a) => run_local(a).await,
+        Cmd::Cadence(a) => run_cadence(a),
     }
 }
 
@@ -1156,6 +1182,17 @@ fn find_scripts_local_dir() -> Result<std::path::PathBuf> {
     )
 }
 
+
+fn run_cadence(args: CadenceArgs) -> Result<()> {
+    match args.cmd {
+        CadenceCmd::Sync(a) => {
+            let repo = a.repo.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let report = cadence::sync(&repo, a.dry_run)?;
+            println!("{report}");
+            Ok(())
+        }
+    }
+}
 
 fn run_local_setup(args: LocalSetupArgs) -> Result<()> {
     let os = detect_host_os()?;
