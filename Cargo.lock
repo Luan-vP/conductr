@@ -212,10 +212,12 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "conductr-core",
  "conductr-instance",
  "conductr-orchestrate",
  "conductr-pod",
  "conductr-schedule",
+ "conductr-setup",
  "conductr-tasks",
  "serde",
  "serde_json",
@@ -310,6 +312,14 @@ dependencies = [
  "regex",
  "serde",
  "thiserror",
+]
+
+[[package]]
+name = "conductr-setup"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "conductr-core",
 ]
 
 [[package]]
