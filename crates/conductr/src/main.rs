@@ -27,8 +27,43 @@ use conductr_tasks::sync::{create_task, list_tasks, sync_tasks};
 use serde::Serialize;
 use wiring::TrackerKind;
 
+const BANNER: &str = r#"
+                              ..,,,,,..
+                          .,;;;;;;;;;;;;;;,.
+                        ,;;;'            `;;;;,       ,,
+                       ,;'                 ';;;;,    ;;;;
+                      .;.;;;;,               ;;;;;.   ''
+                      ;;;;;;;;                ;;;;;
+                      `;;;;;;'                ;;;;;
+                                              ;;;;'   ,,
+                                            .;;;;'   ;;;;
+                                           ,;;;'      ''
+                                         ,;;;'
+                                      ,;;;'
+                                  .;;;;'
+                              .,;;;''
+                          .,;;''
+
+                     |\                         __3__          |
+____|\_______________|\\_______________|_______'__|__`___|_____|___|__________
+____|/___3_|________@'_\|__|_____|_____|___|___|__|__|___|_|__@'___|___|___|__
+___/|____-_|____________|__|_____|____@'___|__@'_@'_@'___|_|______@'___|___|__
+__|_/_\__4_|___|_______@'__|____O'_________|____________O'_|__________@'___|__
+___\|/_____|___|___________|_______________|_______________|_______________|__
+    /         O'
+
+                              c o n d u c t r
+                scheduling and orchestration for agents and people
+"#;
+
 #[derive(Debug, Parser)]
-#[command(name = "conductr", version, about = "Scheduling and orchestration for agents and people")]
+#[command(
+    name = "conductr",
+    version,
+    about = "Scheduling and orchestration for agents and people",
+    before_help = BANNER,
+    arg_required_else_help = true
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
