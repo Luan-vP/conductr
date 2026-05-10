@@ -225,6 +225,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "conductr-adapters"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "conductr-core",
+ "once_cell",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "conductr-core"
 version = "0.1.0"
 dependencies = [
