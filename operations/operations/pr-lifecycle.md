@@ -70,8 +70,8 @@ After every merge, sync the local development branch:
 git checkout develop && git pull origin develop
 ```
 
-(The original poorchestrator skill says `dev`; this repo uses `develop`. See
-the targeting rule in [`safety.md`](./safety.md).)
+This repo uses `develop` as its integration branch. See the targeting rule
+in [`safety.md`](./safety.md).
 
 ### 7. Re-classify
 
@@ -91,5 +91,5 @@ classification before the next pass — see
 
 - [`crates/conductr-orchestrate`](../../crates/conductr-orchestrate) — Rust
   implementation of stages 1–7.
-- [`vendor/poorchestrator/SKILL.md`](../../vendor/poorchestrator/SKILL.md) §§
+- [`skills/orchestrate/SKILL.md`](../../skills/orchestrate/SKILL.md) §§
   "Workflow / A3. Execute the cycle" and "B4. Execute in batches".

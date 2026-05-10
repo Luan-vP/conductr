@@ -11,7 +11,7 @@ A Rust workspace that bundles four concerns into one CLI:
 | `conductr`              | Binary CLI; constructs and wires adapters into use-case crates.         |
 | `conductr-core`         | Shared domain types and port traits (`IssueTracker`, `ScmHost`, `TmuxAgent`, `InstanceProvider`, `Mailbox`). No I/O. |
 | `conductr-adapters`     | Feature-gated concrete connectors (`tmux`, `beads`, `notion`, `gh-cli`, `mail-fs`, `mail-github`, `mock`). Enable all with `--features full`. |
-| `conductr-orchestrate`  | Port of [poorchestrator] — drive `@claude` GitHub-issue implementation in dependency order.  |
+| `conductr-orchestrate`  | Drive `@claude` GitHub-issue implementation in dependency order. Mirrors [`skills/orchestrate/SKILL.md`](skills/orchestrate/SKILL.md). |
 | `conductr-instance`     | Cloud instance spin-up & SSH (**stubbed**).                             |
 | `conductr-pod`          | Diagnose and heal the local Claude Code pod (tmux sessions on this host). |
 | `conductr-schedule`     | Time patterns described in **musical notation** (the seed concept).     |
@@ -19,22 +19,18 @@ A Rust workspace that bundles four concerns into one CLI:
 | `conductr-mail`         | Agent scope dedup and parallel-synthesis substrate.                     |
 | `conductr-setup`        | Project maturity model (L0–L5) and `conductr setup` wizard.             |
 
-[poorchestrator]: https://github.com/Luan-vP/poorchestrator
 [beads_rust]: https://github.com/Dicklesworthstone/beads_rust
 
 ## Submodules (vendored references)
 
 ```
 vendor/
-├── poorchestrator   # MIT — orchestrate skill we ported
 └── beads_rust       # MIT — `br` source, used as a CLI subprocess
 ```
 
 > **Security note.** Submodules are pinned to a commit SHA and `vendor/*` is
-> *not* a Cargo workspace member, so cargo never compiles or runs build.rs from
-> these paths. They're inert reference material. The poorchestrator markdown
-> describes auto-merging behaviour that is prompt-injection-prone; we ported
-> the algorithm into Rust code rather than loading the markdown into an LLM.
+> *not* a Cargo workspace member, so cargo never compiles or runs build.rs
+> from these paths.
 
 ## Setup
 
@@ -384,6 +380,5 @@ are appended after each successful orchestrate pass.
 │   ├── conductr-mail/               # use-case: agent scope dedup + synthesis
 │   └── conductr-setup/              # use-case: project maturity wizard
 └── vendor/
-    ├── poorchestrator/              # submodule
     └── beads_rust/                  # submodule
 ```

@@ -20,8 +20,8 @@ The *when* lives in [`../cadence/`](../cadence/). Everything *how* lives here.
 ## Skills
 
 - [`crates/conductr-orchestrate`](../../crates/conductr-orchestrate) — Rust
-  port of the orchestrate skill; runs the PR lifecycle end-to-end.
-- [`vendor/poorchestrator/SKILL.md`](../../vendor/poorchestrator/SKILL.md) —
-  the source markdown skill (loaded as inert reference, not LLM input).
-- [`vendor/poorchestrator/architect.md`](../../vendor/poorchestrator/architect.md) —
+  implementation of the orchestrate skill; runs the PR lifecycle end-to-end.
+- [`skills/orchestrate/SKILL.md`](../../skills/orchestrate/SKILL.md) — the
+  authoritative markdown spec the Rust code mirrors.
+- [`skills/architect/architect.md`](../../skills/architect/architect.md) —
   the architect agent; produces ARNs, reviews PRs for architectural fit.

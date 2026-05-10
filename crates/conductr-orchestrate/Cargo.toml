@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Port of poorchestrator: GitHub-issue dependency orchestration in Rust"
+description = "GitHub-issue dependency orchestration in Rust"
 
 [dependencies]
 conductr-core = { workspace = true }

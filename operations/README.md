@@ -3,9 +3,9 @@
 The doctrine that governs how `conductr` orchestrates work. These docs are the
 authoritative statement of process — both humans and agents read them.
 
-The orchestration loop in `crates/conductr-orchestrate` and the `orchestrate`
-skill (originally vendored from [`poorchestrator`](../vendor/poorchestrator))
-implement the rules described here.
+The orchestration loop in `crates/conductr-orchestrate` and the
+[`orchestrate`](../skills/orchestrate/SKILL.md) skill implement the rules
+described here.
 
 ## Layout
 
@@ -35,10 +35,9 @@ The skills referenced throughout these docs live in two places:
 
 | Skill              | Location                                       | Implementation                                  |
 | ------------------ | ---------------------------------------------- | ----------------------------------------------- |
-| `orchestrate`      | [`vendor/poorchestrator/SKILL.md`](../vendor/poorchestrator/SKILL.md) | [`crates/conductr-orchestrate`](../crates/conductr-orchestrate) (Rust port) |
-| `architect`        | [`vendor/poorchestrator/architect.md`](../vendor/poorchestrator/architect.md) | invoked by `orchestrate` before triggering batches |
+| `orchestrate`      | [`skills/orchestrate/SKILL.md`](../skills/orchestrate/SKILL.md) | [`crates/conductr-orchestrate`](../crates/conductr-orchestrate) |
+| `architect`        | [`skills/architect/architect.md`](../skills/architect/architect.md) | invoked by `orchestrate` before triggering batches |
 | `conductr-pod`     | [`skills/conductr-pod/SKILL.md`](../skills/conductr-pod/SKILL.md) | [`crates/conductr-pod`](../crates/conductr-pod) |
 
-The orchestrate skill is loaded as inert reference material (see the security
-note in the top-level README); the binary executes the ported Rust algorithm,
-not the markdown.
+The binary executes the Rust algorithm in `crates/conductr-orchestrate`; the
+markdown skill file is the authoritative spec that the Rust port mirrors.

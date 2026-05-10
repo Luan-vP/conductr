@@ -1,4 +1,6 @@
-//! Port of [poorchestrator](https://github.com/Luan-vP/poorchestrator) to Rust.
+//! GitHub-issue dependency orchestration.
+//!
+//! Mirrors the [`orchestrate` skill](../../skills/orchestrate/SKILL.md).
 //!
 //! Surveys open GitHub issues, builds a dependency graph, classifies each
 //! issue into a bucket, then drives the implementation forward by triggering

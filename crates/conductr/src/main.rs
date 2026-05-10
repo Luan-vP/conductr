@@ -38,7 +38,7 @@ struct Cli {
 enum Cmd {
     /// Cron-friendly entry point: ensure a tmux session exists and trigger an orchestrate pass.
     Begin(BeginArgs),
-    /// Drive `@claude` GitHub-issue orchestration (poorchestrator port).
+    /// Drive `@claude` GitHub-issue orchestration.
     Orchestrate(OrchestrateArgs),
     /// Cloud instance management (stubbed).
     Instance(InstanceArgs),

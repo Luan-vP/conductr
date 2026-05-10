@@ -1,9 +1,9 @@
 //! Architecture Reference Notes (ARNs).
 //!
-//! Mirrors the `architect.md` skill from poorchestrator. We model the data
-//! shape and rendering; the LLM-driven analysis itself is intentionally out
-//! of scope for this crate (callers can plug in their own analysis pipeline
-//! and feed the results into [`Arn::render`]).
+//! Mirrors the [`architect`](../../skills/architect/architect.md) agent. We
+//! model the data shape and rendering; the LLM-driven analysis itself is
+//! intentionally out of scope for this crate (callers can plug in their own
+//! analysis pipeline and feed the results into [`Arn::render`]).
 
 use std::collections::BTreeMap;
 

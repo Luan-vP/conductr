@@ -1,6 +1,3 @@
-[submodule "vendor/poorchestrator"]
-	path = vendor/poorchestrator
-	url = https://github.com/Luan-vP/poorchestrator.git
 [submodule "vendor/beads_rust"]
 	path = vendor/beads_rust
 	url = https://github.com/Dicklesworthstone/beads_rust.git

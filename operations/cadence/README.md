@@ -14,7 +14,7 @@ when to stop. Process steps live in [`../operations/`](../operations/).
 These cadences are implemented by:
 
 - [`crates/conductr-orchestrate`](../../crates/conductr-orchestrate) — Rust
-  port of the loop.
-- [`vendor/poorchestrator/SKILL.md`](../../vendor/poorchestrator/SKILL.md) —
-  the original orchestrate skill; cadence rules are extracted from §
-  "Workflow / Mode A" and § "Error Handling".
+  implementation of the loop.
+- [`skills/orchestrate/SKILL.md`](../../skills/orchestrate/SKILL.md) —
+  the orchestrate skill; cadence rules are restated under § "Workflow /
+  Mode A" and § "Error Handling".

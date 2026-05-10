@@ -75,5 +75,5 @@ batches wait for them to be closed manually.
 
 - [`crates/conductr-orchestrate`](../../crates/conductr-orchestrate) — DAG
   build, classifier, and batch executor.
-- [`vendor/poorchestrator/SKILL.md`](../../vendor/poorchestrator/SKILL.md) §§
+- [`skills/orchestrate/SKILL.md`](../../skills/orchestrate/SKILL.md) §§
   "A2. Classify issues" and "B3. Build dependency graph".

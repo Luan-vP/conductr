@@ -4,9 +4,9 @@ The main failure mode of parallel autonomous implementation is **interface
 mismatch** — two agents build things that don't connect. ARNs prevent this by
 making interfaces explicit per issue *before* implementation starts.
 
-The architect agent (
-[`vendor/poorchestrator/architect.md`](../../vendor/poorchestrator/architect.md)
-) writes one ARN as a comment on each issue in a batch. Reviewers (human or
+The architect agent
+([`skills/architect/architect.md`](../../skills/architect/architect.md))
+writes one ARN as a comment on each issue in a batch. Reviewers (human or
 agent) check the resulting PR against its issue's ARN.
 
 ## Shape of an ARN
@@ -112,7 +112,7 @@ The ARN is a living document for the duration of the batch.
 
 ## Skills
 
-- [`vendor/poorchestrator/architect.md`](../../vendor/poorchestrator/architect.md) —
+- [`skills/architect/architect.md`](../../skills/architect/architect.md) —
   the architect agent definition.
 - [`crates/conductr-orchestrate`](../../crates/conductr-orchestrate) — invokes
   the architect before triggering batches that need it.

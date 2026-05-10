@@ -61,5 +61,5 @@ along, and downstream tooling can parse it.
 
 - [`crates/conductr-orchestrate`](../../crates/conductr-orchestrate) —
   the orchestration loop.
-- [`vendor/poorchestrator/SKILL.md`](../../vendor/poorchestrator/SKILL.md)
+- [`skills/orchestrate/SKILL.md`](../../skills/orchestrate/SKILL.md)
   §§ "Workflow / Mode A: auto-mode" and "Error Handling".

@@ -65,5 +65,5 @@ these are "stop the world" — most are "ask the user".
 
 - [`crates/conductr-orchestrate`](../../crates/conductr-orchestrate) — runtime
   enforcement of the invariants and failure-mode playbooks.
-- [`vendor/poorchestrator/SKILL.md`](../../vendor/poorchestrator/SKILL.md)
+- [`skills/orchestrate/SKILL.md`](../../skills/orchestrate/SKILL.md)
   §§ "Determining the human assignee", "Error Handling", and "Important".
