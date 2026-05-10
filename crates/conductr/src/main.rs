@@ -10,8 +10,30 @@ use conductr_schedule::{parse, render_ascii};
 use conductr_tasks::beads::Beads;
 use serde::Serialize;
 
+const BANNER: &str = r#"
+       ╭───╮    ♩    ♪    ♫         ♩    ♪
+     ──┤   ├──●──●────────●─────●────────●──
+       │ G │           ●               ●
+     ──┤   ├────●───────────●──●────────────
+       │   │       ●                  ●
+     ──┤   ├──────────●─────────●──────────●
+       │   │   ●                ●
+     ──┤   ├──────●────●──────────────●─────
+       │   │
+     ──╰───╯─────────●──────●─●──────●──────
+
+                    c o n d u c t r
+        scheduling and orchestration for agents and people
+"#;
+
 #[derive(Debug, Parser)]
-#[command(name = "conductr", version, about = "Scheduling and orchestration for agents and people")]
+#[command(
+    name = "conductr",
+    version,
+    about = "Scheduling and orchestration for agents and people",
+    before_help = BANNER,
+    arg_required_else_help = true
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
