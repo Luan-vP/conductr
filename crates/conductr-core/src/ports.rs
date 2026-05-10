@@ -5,7 +5,8 @@ use async_trait::async_trait;
 pub use crate::types::{InstanceError, TmuxError};
 
 use crate::types::{
-    InstanceHandle, InstanceSpec, Issue, IssueNumber, Pr, PrNumber, RepoSlug, Task, TmuxSession,
+    InstanceHandle, InstanceSpec, Issue, IssueNumber, MailKind, MailMessage, MailRef, Pr, PrNumber,
+    RepoSlug, Task, TmuxSession,
 };
 
 // ── IssueTracker ──────────────────────────────────────────────────────────────
@@ -94,4 +95,38 @@ pub trait InstanceProvider: Send + Sync {
     async fn connect(&self, handle: &InstanceHandle) -> Result<(), InstanceError>;
     async fn run(&self, handle: &InstanceHandle, cmd: &str) -> Result<String, InstanceError>;
     async fn tear_down(&self, handle: &InstanceHandle) -> Result<(), InstanceError>;
+}
+
+// ── Mailbox ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, thiserror::Error)]
+pub enum MailboxError {
+    #[error("io: {0}")]
+    Io(String),
+    #[error("parse: {0}")]
+    Parse(String),
+    #[error("backend: {0}")]
+    Backend(String),
+}
+
+/// Shared bulletin board used by agents to claim scope and request synthesis.
+///
+/// A single trait covers both reads and writes (Rule 6: one trait per port).
+#[async_trait]
+pub trait Mailbox: Send + Sync {
+    /// Append a new message. Returns its assigned id.
+    async fn send(&self, agent: &str, payload: MailKind) -> Result<MailRef, MailboxError>;
+
+    /// Return all messages in the inbox, optionally filtered by kind tag.
+    ///
+    /// `kind_filter` matches the `kind` field of `MailKind` (e.g. `"scope_claim"`).
+    async fn inbox(
+        &self,
+        kind_filter: Option<&str>,
+        since: Option<std::time::Duration>,
+    ) -> Result<Vec<MailMessage>, MailboxError>;
+
+    /// Return all messages in a named thread (the thread id is the `MailRef`
+    /// of the first message in that thread).
+    async fn thread(&self, thread_id: &MailRef) -> Result<Vec<MailMessage>, MailboxError>;
 }

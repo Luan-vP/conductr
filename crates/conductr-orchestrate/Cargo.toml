@@ -20,3 +20,4 @@ async-trait = { workspace = true }
 
 [dev-dependencies]
 conductr-adapters = { workspace = true, features = ["mock"] }
+chrono = { workspace = true }

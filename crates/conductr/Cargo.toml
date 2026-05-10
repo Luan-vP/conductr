@@ -19,12 +19,13 @@ tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
 
 conductr-core        = { workspace = true }
-conductr-adapters    = { workspace = true, features = ["mock", "beads", "notion", "tmux", "gh-cli"] }
+conductr-adapters    = { workspace = true, features = ["mock", "beads", "notion", "tmux", "gh-cli", "mail-fs"] }
 conductr-orchestrate = { workspace = true }
 conductr-instance    = { workspace = true }
 conductr-pod         = { workspace = true }
 conductr-schedule    = { workspace = true }
 conductr-tasks       = { workspace = true }
 conductr-setup       = { workspace = true }
+conductr-mail        = { workspace = true }
 serde                = { workspace = true }
 chrono               = { workspace = true }
