@@ -9,7 +9,7 @@ use conductr_pod::{
     diagnose_all, diagnose_one, ensure_session, heal_all, pick_idle, Diagnosis, FreeOpts, Health,
     SessionState, Tmux, TmuxError,
 };
-use conductr_schedule::{parse, render_ascii};
+use conductr_schedule::{parse, parse_plan, pattern_to_dsl, plan_to_pattern, render_ascii};
 use conductr_tasks::beads::Beads;
 use serde::Serialize;
 
@@ -104,6 +104,13 @@ enum ScheduleCmd {
     Validate { path: PathBuf },
     /// Render a pattern file as an ASCII timeline.
     Render { path: PathBuf },
+    /// Convert a plan markdown file to a schedule pattern DSL.
+    FromPlan {
+        path: PathBuf,
+        /// Also render the ASCII timeline after the DSL.
+        #[arg(long)]
+        render: bool,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -785,6 +792,19 @@ fn run_schedule(args: ScheduleArgs) -> Result<()> {
                 .with_context(|| format!("reading {}", path.display()))?;
             let p = parse(&src)?;
             print!("{}", render_ascii(&p));
+            Ok(())
+        }
+        ScheduleCmd::FromPlan { path, render } => {
+            let src = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            let plan = parse_plan(&src)?;
+            let pattern = plan_to_pattern(&plan);
+            let dsl = pattern_to_dsl(&pattern);
+            print!("{}", dsl);
+            if render {
+                println!();
+                print!("{}", render_ascii(&pattern));
+            }
             Ok(())
         }
     }
