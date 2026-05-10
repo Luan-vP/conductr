@@ -314,6 +314,20 @@ pub enum InstanceError {
     Provider(String),
 }
 
+// ── local-agent types ────────────────────────────────────────────────────────
+
+#[derive(Debug, thiserror::Error)]
+pub enum LocalAgentError {
+    #[error("agent not installed")]
+    NotInstalled,
+    #[error("agent unreachable: {0}")]
+    Unreachable(String),
+    #[error("backend error: {0}")]
+    Backend(String),
+    #[error("model missing: {0}")]
+    ModelMissing(String),
+}
+
 // ── conductr-mail types ───────────────────────────────────────────────────────
 
 /// Opaque identifier for an agent (e.g. "claude/issue-16-…" branch name or session name).

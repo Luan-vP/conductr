@@ -29,3 +29,4 @@ conductr-setup       = { workspace = true }
 conductr-mail        = { workspace = true }
 serde                = { workspace = true }
 chrono               = { workspace = true }
+reqwest              = { workspace = true }

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 
-pub use crate::types::{InstanceError, TmuxError};
+pub use crate::types::{InstanceError, LocalAgentError, TmuxError};
 
 use crate::types::{
     InstanceHandle, InstanceSpec, Issue, IssueNumber, MailKind, MailMessage, MailRef, Pr, PrNumber,
@@ -95,6 +95,14 @@ pub trait InstanceProvider: Send + Sync {
     async fn connect(&self, handle: &InstanceHandle) -> Result<(), InstanceError>;
     async fn run(&self, handle: &InstanceHandle, cmd: &str) -> Result<String, InstanceError>;
     async fn tear_down(&self, handle: &InstanceHandle) -> Result<(), InstanceError>;
+}
+
+// ── LocalAgent ────────────────────────────────────────────────────────────────
+
+#[async_trait]
+pub trait LocalAgent: Send + Sync {
+    async fn name(&self) -> &'static str;
+    async fn complete(&self, prompt: &str) -> Result<String, LocalAgentError>;
 }
 
 // ── Mailbox ───────────────────────────────────────────────────────────────────
