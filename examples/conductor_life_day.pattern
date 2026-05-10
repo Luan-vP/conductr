@@ -1,0 +1,15 @@
+# One day in 6/4 — the conductor life scheduler.
+#
+# Mapping:
+#   - 1 quarter note = 4 hours
+#   - Full bar (6 quarters) = 24 hours
+#   - 1 demisemiquaver (32nd) = 30 minutes
+#
+# The third beat below contains a "second sleep" texture: a quarter
+# subdivided into eight 32nd-notes alternating wake/sleep at 30-minute
+# resolution.
+
+time_signature 6/4
+quarter_duration 4h
+
+| sleep:q | sleep:q | sleep:q[wake:t,sleep:t,wake:t,sleep:t,wake:t,sleep:t,wake:t,sleep:t] | wake:q | work:q | rest:q |
