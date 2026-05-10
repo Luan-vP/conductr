@@ -56,6 +56,8 @@ enum Cmd {
     Setup(SetupArgs),
     /// Agent mail: scope-dedup and synthesis bulletin board.
     Mail(MailArgs),
+    /// Manage local AI providers (ollama, llama.cpp, Pi agent).
+    Local(LocalArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -258,6 +260,7 @@ async fn main() -> Result<()> {
         Cmd::SaveState(a) => run_save_state(a).await,
         Cmd::Setup(a) => run_setup(a).await,
         Cmd::Mail(a) => run_mail(a).await,
+        Cmd::Local(a) => run_local(a),
     }
 }
 
@@ -993,6 +996,204 @@ fn resolve_repo(repo: Option<PathBuf>) -> Result<PathBuf> {
         Some(p) => Ok(p),
         None => std::env::current_dir().context("could not determine current directory"),
     }
+}
+
+// ── Local ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Parser)]
+struct LocalArgs {
+    #[command(subcommand)]
+    cmd: LocalCmd,
+}
+
+#[derive(Debug, Subcommand)]
+enum LocalCmd {
+    /// Detect which local AI providers are installed on this host.
+    Detect,
+    /// Install a local AI provider (or all missing ones).
+    Setup(LocalSetupArgs),
+}
+
+#[derive(Debug, Parser)]
+struct LocalSetupArgs {
+    /// Provider to install: ollama, llamacpp, pi.
+    /// Omit to auto-detect and install all missing providers.
+    #[arg(long)]
+    provider: Option<String>,
+    /// Print the plan without executing any scripts.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalProvider {
+    Ollama,
+    LlamaCpp,
+    Pi,
+}
+
+impl LocalProvider {
+    fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "ollama" => Some(LocalProvider::Ollama),
+            "llamacpp" | "llama-cpp" | "llama.cpp" | "llama_cpp" => Some(LocalProvider::LlamaCpp),
+            "pi" => Some(LocalProvider::Pi),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            LocalProvider::Ollama => "ollama",
+            LocalProvider::LlamaCpp => "llamacpp",
+            LocalProvider::Pi => "pi",
+        }
+    }
+
+    fn binary(self) -> &'static str {
+        match self {
+            LocalProvider::Ollama => "ollama",
+            LocalProvider::LlamaCpp => "llama-server",
+            LocalProvider::Pi => "pi",
+        }
+    }
+
+    fn script_name(self, os: HostOs) -> &'static str {
+        match (self, os) {
+            (LocalProvider::Ollama, HostOs::Mac) => "install-ollama-mac.sh",
+            (LocalProvider::Ollama, HostOs::Linux) => "install-ollama-linux.sh",
+            (LocalProvider::LlamaCpp, HostOs::Mac) => "install-llamacpp-mac.sh",
+            (LocalProvider::LlamaCpp, HostOs::Linux) => "install-llamacpp-linux.sh",
+            (LocalProvider::Pi, HostOs::Mac) => "install-pi-mac.sh",
+            (LocalProvider::Pi, HostOs::Linux) => "install-pi-linux.sh",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HostOs {
+    Mac,
+    Linux,
+}
+
+fn detect_host_os() -> Result<HostOs> {
+    let out = std::process::Command::new("uname")
+        .arg("-s")
+        .output()
+        .context("running uname -s")?;
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_lowercase();
+    match name.as_str() {
+        "darwin" => Ok(HostOs::Mac),
+        "linux" => Ok(HostOs::Linux),
+        other => anyhow::bail!(
+            "unsupported OS: {other}. conductr local setup supports macOS and Linux only"
+        ),
+    }
+}
+
+fn provider_is_installed(provider: LocalProvider) -> bool {
+    let binary = provider.binary();
+    std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path).any(|dir| {
+                let candidate = dir.join(binary);
+                candidate.is_file()
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn find_scripts_local_dir() -> Result<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("CONDUCTR_SCRIPTS_DIR") {
+        let p = std::path::PathBuf::from(dir);
+        if p.is_dir() {
+            return Ok(p);
+        }
+    }
+    let mut candidate = std::env::current_dir().context("determining cwd")?;
+    for _ in 0..4 {
+        let scripts_local = candidate.join("scripts").join("local");
+        if scripts_local.is_dir() {
+            return Ok(scripts_local);
+        }
+        if !candidate.pop() {
+            break;
+        }
+    }
+    anyhow::bail!(
+        "scripts/local/ directory not found. \
+         Set CONDUCTR_SCRIPTS_DIR to the directory containing the install scripts, \
+         or run from within the conductr repo."
+    )
+}
+
+fn run_local(args: LocalArgs) -> Result<()> {
+    match args.cmd {
+        LocalCmd::Detect => run_local_detect(),
+        LocalCmd::Setup(a) => run_local_setup(a),
+    }
+}
+
+fn run_local_detect() -> Result<()> {
+    let providers = [LocalProvider::Ollama, LocalProvider::LlamaCpp, LocalProvider::Pi];
+    println!("{:<12} {}", "PROVIDER", "STATUS");
+    for p in &providers {
+        let status = if provider_is_installed(*p) { "installed" } else { "missing" };
+        println!("{:<12} {}", p.name(), status);
+    }
+    Ok(())
+}
+
+fn run_local_setup(args: LocalSetupArgs) -> Result<()> {
+    let os = detect_host_os()?;
+    let scripts_dir = find_scripts_local_dir()?;
+
+    let to_install: Vec<LocalProvider> = if let Some(name) = &args.provider {
+        let p = LocalProvider::from_str(name).with_context(|| {
+            format!("unknown provider '{name}'. Valid: ollama, llamacpp, pi")
+        })?;
+        vec![p]
+    } else {
+        let all = [LocalProvider::Ollama, LocalProvider::LlamaCpp, LocalProvider::Pi];
+        let missing: Vec<LocalProvider> =
+            all.iter().copied().filter(|p| !provider_is_installed(*p)).collect();
+        if missing.is_empty() {
+            println!("All providers already installed.");
+            return Ok(());
+        }
+        println!(
+            "Missing providers: {}",
+            missing.iter().map(|p| p.name()).collect::<Vec<_>>().join(", ")
+        );
+        missing
+    };
+
+    for provider in to_install {
+        let script_name = provider.script_name(os);
+        let script_path = scripts_dir.join(script_name);
+
+        if !script_path.exists() {
+            anyhow::bail!(
+                "script not found: {}. Is CONDUCTR_SCRIPTS_DIR set correctly?",
+                script_path.display()
+            );
+        }
+
+        if args.dry_run {
+            println!("plan: would run {}", script_path.display());
+        } else {
+            println!("running: {}", script_path.display());
+            let status = std::process::Command::new("bash")
+                .arg(&script_path)
+                .status()
+                .with_context(|| format!("running {}", script_path.display()))?;
+            if !status.success() {
+                anyhow::bail!("{} exited with non-zero status: {}", script_name, status);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn truncate(s: &str, max: usize) -> String {
