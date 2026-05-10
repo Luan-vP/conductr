@@ -11,6 +11,7 @@ A Rust workspace that bundles four concerns into one CLI:
 | `conductr`              | Binary CLI that dispatches to the others.                               |
 | `conductr-orchestrate`  | Port of [poorchestrator] — drive `@claude` GitHub-issue implementation in dependency order.  |
 | `conductr-instance`     | Cloud instance spin-up & SSH (port of `agentic`; **stubbed**).          |
+| `conductr-pod`          | Diagnose and heal the local Claude Code pod (tmux sessions on this host). |
 | `conductr-schedule`     | Time patterns described in **musical notation** (the seed concept).     |
 | `conductr-tasks`        | Task tracking via [beads_rust] (`br`, local SQLite + JSONL) and Notion. |
 
@@ -53,6 +54,9 @@ conductr orchestrate --repo owner/repo [--dry-run] [--once] [--poll-secs 60]
 conductr instance    spin-up --name <name> | list
 conductr schedule    validate <pattern.txt> | render <pattern.txt>
 conductr tasks       list [--ready] | create <title> [-p N] | sync-to-notion --database <id>
+conductr diagnose    [--pattern <substr>] [--all] [--json]
+conductr heal        [--pattern <substr>] [--all] [--dry-run] [--command <cmd>] [--json]
+conductr save-state  [--pattern <substr>] [--all] [--dry-run] [--no-restart] [--command <cmd>]
 ```
 
 ### Pattern DSL
@@ -114,6 +118,34 @@ and pushes each task into a Notion database.
 
 Set `NOTION_API_KEY` to a Notion integration token before sync.
 
+### Pod (diagnose / heal)
+
+`conductr` treats the set of `claude` agents running in tmux on the local host
+as a "pod". Two subcommands inspect and recover it:
+
+- `conductr diagnose` — for each tmux session whose name contains `claude`,
+  capture the rendered pane and classify the agent as `idle`, `working`,
+  `crashed`, or `unknown`. Pass `--all` to inspect every tmux session,
+  `--pattern <s>` to override the name filter, and `--json` for
+  machine-readable output.
+- `conductr heal` — restart any session diagnosed as `crashed` by typing
+  `claude` (or `--command <cmd>`) into its pane. Use `--dry-run` to see the
+  plan first.
+- `conductr save-state` — graceful pod restart. For each session it writes a
+  `[thread-recovery:<session>]` issue to beads (priority 2 by default,
+  labelled `thread-recovery,<session>`) carrying the last user message and
+  pane tail, then sends `/exit` followed by the relaunch command. Pass
+  `--no-restart` to capture without restarting, or `--dry-run` to plan
+  without writing. Output is a JSON manifest the
+  [`conductr-pod` skill](skills/conductr-pod/SKILL.md) consumes to mirror the
+  recovery issues into Notion (the binary deliberately stops at beads).
+
+Classification is purely textual: a session counts as alive iff the pane
+shows the Claude Code TUI (banner / `❯` prompt / status footer). A session
+counts as `working` iff a spinner glyph (`✻ …`) appears below the most
+recent prompt; otherwise alive sessions are `idle`. Anything else (a shell
+prompt, the `[Process completed]` footer) is `crashed`.
+
 ### Instance
 
 The `conductr-instance` crate currently exposes the trait surface
@@ -133,6 +165,7 @@ will be ported once `vendor/agentic` is wired up.
 │   ├── conductr/                    # binary
 │   ├── conductr-orchestrate/
 │   ├── conductr-instance/
+│   ├── conductr-pod/
 │   ├── conductr-schedule/
 │   └── conductr-tasks/
 └── vendor/

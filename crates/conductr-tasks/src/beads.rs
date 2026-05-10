@@ -129,11 +129,31 @@ impl Beads {
     }
 
     pub async fn create(&self, title: &str, priority: Option<u8>) -> Result<Task, BeadsError> {
+        self.create_full(title, priority, None, &[]).await
+    }
+
+    /// Create with optional body and labels.
+    pub async fn create_full(
+        &self,
+        title: &str,
+        priority: Option<u8>,
+        body: Option<&str>,
+        labels: &[&str],
+    ) -> Result<Task, BeadsError> {
         let prio = priority.map(|p| p.to_string());
+        let labels_csv = if labels.is_empty() { None } else { Some(labels.join(",")) };
         let mut args: Vec<&str> = vec!["create", title, "--json"];
         if let Some(p) = &prio {
             args.push("-p");
             args.push(p);
+        }
+        if let Some(b) = body {
+            args.push("-d");
+            args.push(b);
+        }
+        if let Some(l) = &labels_csv {
+            args.push("-l");
+            args.push(l);
         }
         let out = self.run(&args).await?;
         let raw: RawIssue = serde_json::from_str(&out)?;
