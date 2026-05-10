@@ -9,6 +9,7 @@ members = [
     "crates/conductr-pod",
     "crates/conductr-schedule",
     "crates/conductr-tasks",
+    "crates/conductr-setup",
 ]
 
 [workspace.package]
@@ -42,6 +43,7 @@ conductr-instance    = { path = "crates/conductr-instance",    version = "0.1.0"
 conductr-pod         = { path = "crates/conductr-pod",         version = "0.1.0" }
 conductr-schedule    = { path = "crates/conductr-schedule",    version = "0.1.0" }
 conductr-tasks       = { path = "crates/conductr-tasks",       version = "0.1.0" }
+conductr-setup       = { path = "crates/conductr-setup",       version = "0.1.0" }
 
 [profile.release]
 lto = "thin"

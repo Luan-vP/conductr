@@ -1,0 +1,11 @@
+[package]
+name = "conductr-setup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Project maturity wizard for conductr repositories"
+
+[dependencies]
+conductr-core = { workspace = true }
+anyhow = { workspace = true }

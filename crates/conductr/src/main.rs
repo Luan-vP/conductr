@@ -1,4 +1,4 @@
-//! `conductr` CLI: orchestrate, instance, schedule, tasks.
+//! `conductr` CLI: orchestrate, instance, schedule, tasks, setup.
 
 use std::path::PathBuf;
 
@@ -10,6 +10,7 @@ use conductr_pod::{
     SessionState, Tmux, TmuxError,
 };
 use conductr_schedule::{parse, parse_plan, pattern_to_dsl, plan_to_pattern, render_ascii};
+use conductr_setup::wizard::WizardMode;
 use conductr_tasks::beads::Beads;
 use serde::Serialize;
 
@@ -40,6 +41,8 @@ enum Cmd {
     Heal(HealArgs),
     /// Snapshot unfinished work to beads then restart pod sessions.
     SaveState(SaveStateArgs),
+    /// Check and improve repository maturity (setup wizard).
+    Setup(SetupArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -233,6 +236,7 @@ async fn main() -> Result<()> {
         Cmd::Free(a) => run_free(a).await,
         Cmd::Heal(a) => run_heal(a).await,
         Cmd::SaveState(a) => run_save_state(a).await,
+        Cmd::Setup(a) => run_setup(a).await,
     }
 }
 
@@ -718,6 +722,85 @@ async fn restart_session(tmux: &Tmux, d: &Diagnosis, command: &str) -> Result<St
             tmux.send_line(&d.session.name, command).await?;
             Ok("restarted:exit-then-relaunch".into())
         }
+    }
+}
+
+// ── Setup ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Parser)]
+struct SetupArgs {
+    #[command(subcommand)]
+    cmd: SetupCmd,
+}
+
+#[derive(Debug, Subcommand)]
+enum SetupCmd {
+    /// Report the maturity level of a repository.
+    Status {
+        /// Path to the repository root (defaults to current directory).
+        #[arg(long)]
+        repo: Option<PathBuf>,
+    },
+    /// Interactively bring a repository to a higher maturity level.
+    Wizard {
+        /// Path to the repository root (defaults to current directory).
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Apply all fixes without prompting.
+        #[arg(long)]
+        non_interactive: bool,
+        /// Print the plan without making any changes.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Open the Claude GitHub App install page.
+    InstallClaudeApp {
+        /// Path to the repository root (defaults to current directory).
+        #[arg(long)]
+        repo: Option<PathBuf>,
+    },
+}
+
+async fn run_setup(args: SetupArgs) -> Result<()> {
+    match args.cmd {
+        SetupCmd::Status { repo } => {
+            let repo = resolve_repo(repo)?;
+            let results = conductr_setup::checks::run_all(&repo);
+            let report = conductr_core::MaturityReport::compute(results);
+            println!("Repo:  {}", repo.display());
+            println!("Level: {}", report.level);
+            println!();
+            for r in &report.results {
+                let icon = if r.passed { "✓" } else { "✗" };
+                println!("  {} [{}] {}", icon, r.check.level, r.check.label);
+                if let Some(detail) = &r.detail {
+                    println!("    → {}", detail);
+                }
+            }
+        }
+        SetupCmd::Wizard { repo, non_interactive, dry_run } => {
+            let repo = resolve_repo(repo)?;
+            let mode = if dry_run {
+                WizardMode::DryRun
+            } else if non_interactive {
+                WizardMode::NonInteractive
+            } else {
+                WizardMode::Interactive
+            };
+            conductr_setup::wizard::run(&repo, mode).await?;
+        }
+        SetupCmd::InstallClaudeApp { repo } => {
+            let repo = resolve_repo(repo)?;
+            conductr_setup::fixes::install_claude_app(&repo, false)?;
+        }
+    }
+    Ok(())
+}
+
+fn resolve_repo(repo: Option<PathBuf>) -> Result<PathBuf> {
+    match repo {
+        Some(p) => Ok(p),
+        None => std::env::current_dir().context("could not determine current directory"),
     }
 }
 
