@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use conductr_orchestrate::{GhCli, Orchestrator, OrchestratorConfig, RepoSlug};
-use conductr_pod::{diagnose_all, heal_all, pick_idle, Diagnosis, FreeOpts, Health, Tmux};
+use conductr_pod::{
+    diagnose_all, diagnose_one, ensure_session, heal_all, pick_idle, Diagnosis, FreeOpts, Health,
+    SessionState, Tmux, TmuxError,
+};
 use conductr_schedule::{parse, render_ascii};
 use conductr_tasks::beads::Beads;
 use serde::Serialize;
@@ -19,6 +22,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
+    /// Cron-friendly entry point: ensure a tmux session exists and trigger an orchestrate pass.
+    Begin(BeginArgs),
     /// Drive `@claude` GitHub-issue orchestration (poorchestrator port).
     Orchestrate(OrchestrateArgs),
     /// Cloud instance management (stubbed; agentic port pending).
@@ -35,6 +40,25 @@ enum Cmd {
     Heal(HealArgs),
     /// Snapshot unfinished work to beads then restart pod sessions.
     SaveState(SaveStateArgs),
+}
+
+#[derive(Debug, Parser)]
+struct BeginArgs {
+    /// Project tag — the tmux session will be named `conductr-<tag>`.
+    #[arg(long)]
+    tag: String,
+    /// `owner/repo` slug forwarded to `conductr orchestrate --repo`.
+    #[arg(long)]
+    repo: Option<String>,
+    /// Working directory for the new tmux session (defaults to the current directory).
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    /// Leave Claude running its own polling loop; omit for a single `--once` pass (cron default).
+    #[arg(long)]
+    continuous: bool,
+    /// Print the plan without creating sessions, starting Claude, or sending keys.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -193,6 +217,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Begin(a) => run_begin(a).await,
         Cmd::Orchestrate(a) => run_orchestrate(a).await,
         Cmd::Instance(a) => run_instance(a).await,
         Cmd::Schedule(a) => run_schedule(a),
@@ -209,6 +234,198 @@ fn pod_pattern<'a>(explicit: Option<&'a str>, all: bool) -> Option<&'a str> {
         None
     } else {
         explicit.or(Some("claude"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// begin
+// ---------------------------------------------------------------------------
+
+async fn run_begin(args: BeginArgs) -> Result<()> {
+    let session = format!("conductr-{}", args.tag);
+    let cwd = args
+        .cwd
+        .map(|p| p.to_string_lossy().into_owned())
+        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| ".".to_string());
+
+    let orchestrate_prompt = build_orchestrate_prompt(args.repo.as_deref(), args.continuous);
+
+    // Auto mode via --dangerously-skip-permissions (CLI flag, most cron-friendly).
+    // Remote control is provided by tmux send-keys injection (what conductr already does).
+    let claude_cmd = "claude --dangerously-skip-permissions";
+
+    if args.dry_run {
+        let tmux = Tmux::new();
+        return run_begin_dry(&tmux, &session, &cwd, claude_cmd, &orchestrate_prompt).await;
+    }
+
+    let lock_path = begin_lockfile_path(&args.tag)?;
+    if let Some(pid) = acquire_begin_lock(&lock_path)? {
+        println!(
+            "begin: another conductr begin is already running for tag '{}' (pid {pid}); skipping",
+            args.tag
+        );
+        return Ok(());
+    }
+    let _lock = LockGuard(lock_path);
+
+    let tmux = Tmux::new();
+    let state = ensure_session(&tmux, &session, &cwd)
+        .await
+        .with_context(|| format!("ensuring tmux session '{session}'"))?;
+
+    match &state {
+        SessionState::Existing(Health::Working { activity }) => {
+            println!("begin: session '{session}' is busy ({activity}); skipping");
+            return Ok(());
+        }
+        SessionState::Existing(Health::Unknown { reason }) => {
+            println!("begin: session '{session}' is unclassified ({reason}); skipping");
+            return Ok(());
+        }
+        SessionState::Existing(Health::Crashed { .. }) => {
+            println!("begin: session '{session}' crashed — restarting Claude");
+            tmux.send_line(&session, claude_cmd)
+                .await
+                .context("restarting Claude after crash")?;
+            wait_for_idle(&tmux, &session).await?;
+        }
+        SessionState::Created => {
+            println!("begin: created session '{session}' — starting Claude");
+            tmux.send_line(&session, claude_cmd)
+                .await
+                .context("starting Claude in new session")?;
+            wait_for_idle(&tmux, &session).await?;
+        }
+        SessionState::Existing(Health::Idle { .. }) => {
+            println!("begin: session '{session}' is idle — sending orchestrate prompt");
+        }
+    }
+
+    println!("begin: sending: {orchestrate_prompt}");
+    tmux.send_line(&session, &orchestrate_prompt)
+        .await
+        .context("sending orchestrate prompt")?;
+
+    Ok(())
+}
+
+fn build_orchestrate_prompt(repo: Option<&str>, continuous: bool) -> String {
+    let mut cmd = String::from("conductr orchestrate");
+    if let Some(r) = repo {
+        cmd.push_str(" --repo ");
+        cmd.push_str(r);
+    }
+    if !continuous {
+        cmd.push_str(" --once");
+    }
+    cmd
+}
+
+async fn run_begin_dry(
+    tmux: &Tmux,
+    session: &str,
+    cwd: &str,
+    claude_cmd: &str,
+    orchestrate_prompt: &str,
+) -> Result<()> {
+    let sessions = match tmux.list_sessions().await {
+        Ok(s) => s,
+        Err(TmuxError::NoServer) | Err(TmuxError::NotInstalled) => {
+            println!("plan: tmux not running");
+            println!("plan: → would create session '{session}' at cwd={cwd}");
+            println!("plan: → would start Claude: `{claude_cmd}`");
+            println!("plan: → would send: `{orchestrate_prompt}`");
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    if sessions.iter().any(|s| s.name == session) {
+        match diagnose_one(tmux, session).await {
+            Ok(d) => {
+                println!("plan: session '{session}' exists ({})", health_label(&d.health));
+                match &d.health {
+                    Health::Working { activity } => {
+                        println!("plan: → would skip (busy: {activity})");
+                    }
+                    Health::Unknown { reason } => {
+                        println!("plan: → would skip (unclassified: {reason})");
+                    }
+                    Health::Crashed { .. } => {
+                        println!("plan: → would restart Claude: `{claude_cmd}`");
+                        println!("plan: → would send: `{orchestrate_prompt}`");
+                    }
+                    Health::Idle { .. } => {
+                        println!("plan: → would send: `{orchestrate_prompt}`");
+                    }
+                }
+            }
+            Err(e) => println!("plan: session '{session}' exists but diagnose failed: {e}"),
+        }
+    } else {
+        println!("plan: session '{session}' does not exist");
+        println!("plan: cwd = {cwd}");
+        println!("plan: → would create session '{session}'");
+        println!("plan: → would start Claude: `{claude_cmd}`");
+        println!("plan: → would send: `{orchestrate_prompt}`");
+    }
+    Ok(())
+}
+
+async fn wait_for_idle(tmux: &Tmux, session: &str) -> Result<()> {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        if let Ok(d) = diagnose_one(tmux, session).await {
+            if matches!(d.health, Health::Idle { .. }) {
+                return Ok(());
+            }
+        }
+        if Instant::now() > deadline {
+            anyhow::bail!("timed out waiting for Claude to become idle in session '{session}'");
+        }
+    }
+}
+
+fn begin_lockfile_path(tag: &str) -> Result<PathBuf> {
+    let home = std::env::var("HOME").context("HOME env var not set")?;
+    let dir = PathBuf::from(home).join(".conductr");
+    std::fs::create_dir_all(&dir).context("creating ~/.conductr")?;
+    Ok(dir.join(format!("begin-{tag}.lock")))
+}
+
+/// Try to acquire the lock. Returns `Some(pid)` if another process holds it,
+/// `None` if this process now holds it.
+fn acquire_begin_lock(path: &PathBuf) -> Result<Option<u32>> {
+    if path.exists() {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(pid) = content.trim().parse::<u32>() {
+                if pid_alive(pid) {
+                    return Ok(Some(pid));
+                }
+            }
+        }
+        // Stale lock — remove it.
+        let _ = std::fs::remove_file(path);
+    }
+    std::fs::write(path, std::process::id().to_string().as_bytes())
+        .with_context(|| format!("writing lockfile {}", path.display()))?;
+    Ok(None)
+}
+
+fn pid_alive(pid: u32) -> bool {
+    // Linux: /proc/<pid> exists iff the process is alive.
+    std::fs::metadata(format!("/proc/{pid}")).is_ok()
+}
+
+struct LockGuard(PathBuf);
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 
