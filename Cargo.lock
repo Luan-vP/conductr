@@ -210,11 +210,14 @@ name = "conductr"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "conductr-instance",
  "conductr-orchestrate",
+ "conductr-pod",
  "conductr-schedule",
  "conductr-tasks",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -250,6 +253,19 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "conductr-pod"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

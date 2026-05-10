@@ -20,5 +20,8 @@ serde_json = { workspace = true }
 
 conductr-orchestrate = { workspace = true }
 conductr-instance    = { workspace = true }
+conductr-pod         = { workspace = true }
 conductr-schedule    = { workspace = true }
 conductr-tasks       = { workspace = true }
+serde                = { workspace = true }
+chrono               = { workspace = true }

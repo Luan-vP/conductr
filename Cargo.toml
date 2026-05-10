@@ -4,6 +4,7 @@ members = [
     "crates/conductr",
     "crates/conductr-orchestrate",
     "crates/conductr-instance",
+    "crates/conductr-pod",
     "crates/conductr-schedule",
     "crates/conductr-tasks",
 ]
@@ -34,6 +35,7 @@ futures = "0.3"
 
 conductr-orchestrate = { path = "crates/conductr-orchestrate", version = "0.1.0" }
 conductr-instance    = { path = "crates/conductr-instance",    version = "0.1.0" }
+conductr-pod         = { path = "crates/conductr-pod",         version = "0.1.0" }
 conductr-schedule    = { path = "crates/conductr-schedule",    version = "0.1.0" }
 conductr-tasks       = { path = "crates/conductr-tasks",       version = "0.1.0" }
 
