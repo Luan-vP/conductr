@@ -40,7 +40,7 @@ The skills referenced throughout these docs live in two places:
 | ------------------ | ---------------------------------------------- | ----------------------------------------------- |
 | `orchestrate`      | [`skills/orchestrate/SKILL.md`](../skills/orchestrate/SKILL.md) | [`crates/conductr-orchestrate`](../crates/conductr-orchestrate) |
 | `architect`        | [`skills/architect/architect.md`](../skills/architect/architect.md) | invoked by `orchestrate` before triggering batches |
-| `conductr-pod`     | [`skills/conductr-pod/SKILL.md`](../skills/conductr-pod/SKILL.md) | [`crates/conductr-pod`](../crates/conductr-pod) |
+| `pod`              | [`skills/pod/SKILL.md`](../skills/pod/SKILL.md) | [`crates/conductr-pod`](../crates/conductr-pod) |
 
 The binary executes the Rust algorithm in `crates/conductr-orchestrate`; the
 markdown skill file is the authoritative spec that the Rust port mirrors.

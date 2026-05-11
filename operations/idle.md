@@ -9,7 +9,7 @@ Where orchestrate's doctrine spans [`cadence/`](./cadence/) and
 
 ## Distinction from `Health::Idle`
 
-`Health::Idle` and `conductr free` are **session-level**: a tmux pane in the
+`Health::Idle` and `conductr pod free` are **session-level**: a tmux pane in the
 local pod has no work in flight. The `idle` *process* is **orchestrator-level**:
 the workflow as a whole has nothing pressing to do, so the binary picks up
 self-directed scan work to keep the system improving between orchestrate
