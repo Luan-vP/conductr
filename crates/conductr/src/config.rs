@@ -91,6 +91,8 @@ pub struct OrchestrateSection {
 
 #[derive(Debug, Deserialize, Default)]
 struct RawConfig {
+    pub project_tag: Option<String>,
+    pub repo: Option<String>,
     #[serde(default)]
     pub local: LocalSection,
     #[serde(default)]
@@ -99,6 +101,114 @@ struct RawConfig {
     pub band: BandSection,
     #[serde(default)]
     pub orchestrate: OrchestrateSection,
+}
+
+/// Read `project_tag` from `.conductr` in `repo_path`.
+/// Returns `None` when the file or field is absent.
+pub fn read_project_tag(repo_path: &Path) -> Result<Option<String>> {
+    read_raw(repo_path).map(|c| c.project_tag)
+}
+
+/// Validate that `tag` contains only `[a-z0-9-]` and is non-empty.
+pub fn validate_tag(tag: &str) -> Result<()> {
+    if tag.is_empty() {
+        anyhow::bail!("project tag must not be empty");
+    }
+    if !tag.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+        anyhow::bail!(
+            "project tag '{}' contains invalid characters (allowed: [a-z0-9-])",
+            tag
+        );
+    }
+    Ok(())
+}
+
+/// Ensure a `.conductr` file exists in `repo_path`.
+///
+/// If the file already exists, returns the `project_tag` from it (error if the
+/// field is missing).  If the file does not exist, derives the tag from the git
+/// remote `origin`, writes a minimal `.conductr`, and returns the derived tag.
+///
+/// Failure mode: if no git remote `origin` is configured, returns an error
+/// asking the caller to create `.conductr` manually.
+pub fn ensure_dot_conductr(repo_path: &Path) -> Result<String> {
+    let path = repo_path.join(".conductr");
+    if path.exists() {
+        return read_raw(repo_path)?
+            .project_tag
+            .ok_or_else(|| anyhow::anyhow!(".conductr exists but has no `project_tag` field"));
+    }
+
+    let (tag, repo_slug) = derive_tag_and_repo_from_git(repo_path)?;
+    validate_tag(&tag)?;
+
+    let content = format!(
+        "# Project config for {} — created automatically by `conductr begin`.\n\
+         # Edit `project_tag` to change the namespace slug (legal chars: [a-z0-9-]).\n\
+         \n\
+         project_tag = \"{}\"\n\
+         repo        = \"{}\"\n",
+        tag, tag, repo_slug,
+    );
+
+    std::fs::write(&path, content)
+        .with_context(|| format!("writing {}", path.display()))?;
+
+    println!("created {} (project_tag = \"{}\")", path.display(), tag);
+    Ok(tag)
+}
+
+fn derive_tag_and_repo_from_git(repo_path: &Path) -> Result<(String, String)> {
+    let output = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(repo_path)
+        .output()
+        .context("running git remote get-url origin")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "no git remote 'origin' found; cannot derive project tag automatically.\n\
+             Create a .conductr file manually with `project_tag = \"<name>\"`"
+        );
+    }
+
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let (owner_repo, tag) = parse_url(&url);
+    Ok((tag, owner_repo))
+}
+
+/// Parse a git remote URL into `(owner/repo, tag)`.
+/// Handles both HTTPS (`https://github.com/owner/repo.git`) and
+/// SSH (`git@github.com:owner/repo.git`) forms.
+fn parse_url(url: &str) -> (String, String) {
+    let without_git = url.trim_end_matches('/').trim_end_matches(".git");
+
+    // Split on '/'. Both URL forms end with "owner/repo" after their prefix:
+    //   HTTPS: "https://github.com/owner/repo"  → ["https:", "", "github.com", "owner", "repo"]
+    //   SSH:   "git@github.com:owner/repo"       → ["git@github.com:owner",               "repo"]
+    let parts: Vec<&str> = without_git.split('/').collect();
+    let n = parts.len();
+
+    let repo_name = parts.last().copied().unwrap_or(without_git);
+
+    let owner_repo = if n >= 2 {
+        let owner_part = parts[n - 2];
+        // SSH form has "git@host:owner" as the second-to-last segment; strip the host.
+        let owner = owner_part.rsplit(':').next().unwrap_or(owner_part);
+        format!("{}/{}", owner, repo_name)
+    } else {
+        repo_name.to_string()
+    };
+
+    let tag = repo_name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' { c } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+
+    (owner_repo, tag)
 }
 
 /// Read the `[local]` section from `.conductr` in `repo_path`.
@@ -310,5 +420,75 @@ tmux_complexity_min = "huge"
 "#;
         let result: Result<RawConfig, _> = toml::from_str(raw);
         assert!(result.is_err(), "invalid complexity value should be rejected");
+    }
+
+    // ── namespacing (project_tag / repo / parse_url) ──────────────────────────
+
+    #[test]
+    fn parses_project_tag() {
+        let raw = r#"project_tag = "my-project""#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.project_tag.as_deref(), Some("my-project"));
+    }
+
+    #[test]
+    fn parses_repo_field() {
+        let raw = r#"
+project_tag = "foo"
+repo        = "acme/foo"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.project_tag.as_deref(), Some("foo"));
+        assert_eq!(cfg.repo.as_deref(), Some("acme/foo"));
+    }
+
+    #[test]
+    fn validate_tag_accepts_valid() {
+        assert!(validate_tag("foo").is_ok());
+        assert!(validate_tag("my-project").is_ok());
+        assert!(validate_tag("conductr").is_ok());
+        assert!(validate_tag("project123").is_ok());
+        assert!(validate_tag("a").is_ok());
+    }
+
+    #[test]
+    fn validate_tag_rejects_uppercase() {
+        assert!(validate_tag("MyProject").is_err());
+    }
+
+    #[test]
+    fn validate_tag_rejects_slash() {
+        assert!(validate_tag("repo/product").is_err());
+    }
+
+    #[test]
+    fn validate_tag_rejects_empty() {
+        assert!(validate_tag("").is_err());
+    }
+
+    #[test]
+    fn parse_url_https() {
+        let (owner_repo, tag) = parse_url("https://github.com/acme/my-project.git");
+        assert_eq!(tag, "my-project");
+        assert!(owner_repo.contains("my-project"));
+    }
+
+    #[test]
+    fn parse_url_ssh() {
+        let (owner_repo, tag) = parse_url("git@github.com:acme/my-project.git");
+        assert_eq!(tag, "my-project");
+        assert!(owner_repo.contains("my-project"));
+    }
+
+    #[test]
+    fn parse_url_uppercase_sanitised() {
+        let (_owner_repo, tag) = parse_url("https://github.com/acme/My-Repo.git");
+        assert_eq!(tag, "my-repo");
+    }
+
+    #[test]
+    fn parse_url_conductr_repo() {
+        let (_owner_repo, tag) = parse_url("https://github.com/Luan-vP/conductr.git");
+        assert_eq!(tag, "conductr");
     }
 }

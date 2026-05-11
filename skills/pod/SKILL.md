@@ -24,7 +24,9 @@ only handles the local-tmux pod.
 
 - `conductr` on `$PATH` (`cargo install --path crates/conductr` from the repo).
 - `tmux` running with the user's pod sessions. Pod sessions are matched by
-  name substring; default is `claude`.
+  name prefix; default is `conductr-` (covers all `conductr-<tag>-<agent>`
+  sessions).  Sessions created before the namespacing convention can be
+  included with `--all`.
 - For `conductr pod save-state --tracker beads` (default): `br` (beads) installed and a
   beads database initialised in `~/.beads` or the current directory.
 - For `conductr pod save-state --tracker notion`: `NOTION_API_KEY` set and

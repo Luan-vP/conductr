@@ -433,7 +433,7 @@ fn pod_pattern<'a>(explicit: Option<&'a str>, all: bool) -> Option<&'a str> {
     if all {
         None
     } else {
-        explicit.or(Some("claude"))
+        explicit.or(Some("conductr-"))
     }
 }
 
@@ -442,12 +442,21 @@ fn pod_pattern<'a>(explicit: Option<&'a str>, all: bool) -> Option<&'a str> {
 // ---------------------------------------------------------------------------
 
 async fn run_begin(args: BeginArgs) -> Result<()> {
-    let session = format!("conductr-{}", args.tag);
+    let session = format!("conductr-{}-conductr", args.tag);
     let cwd = args
         .cwd
         .map(|p| p.to_string_lossy().into_owned())
         .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
         .unwrap_or_else(|| ".".to_string());
+
+    // Implicit .conductr init: create the file if absent (non-fatal — we
+    // already have the tag from --tag so the session can proceed either way).
+    let cwd_path = std::path::Path::new(&cwd);
+    if !cwd_path.join(".conductr").exists() {
+        if let Err(e) = config::ensure_dot_conductr(cwd_path) {
+            eprintln!("begin: could not init .conductr in {cwd}: {e}");
+        }
+    }
 
     let orchestrate_prompt = build_orchestrate_prompt(args.repo.as_deref(), args.continuous);
 
