@@ -153,6 +153,8 @@ Human action needed: #E — <title> [human] (assigned to @<resolved-assignee>)
 Next cycle will start when PRs arrive.
 ```
 
+After reporting each cycle, run the calendar sync (see § Calendar Sync below).
+
 ### Mode B: Explicit issue list
 
 When called with issue numbers or a label.
@@ -276,6 +278,8 @@ Human action needed:
 4/4 issues completed in 3 batches (1 issue awaiting human action)
 ```
 
+After reporting, run the calendar sync (see § Calendar Sync below).
+
 ## Error Handling
 
 - **PR doesn't appear within 30 minutes** — warn the user, ask whether to skip, keep waiting, or re-trigger.
@@ -284,6 +288,18 @@ Human action needed:
 - **Dependency outside batch** — check if already closed/merged. If satisfied, proceed. If not, warn and ask.
 - **Bot doesn't respond** — after 10 minutes with no PR or comment, check `gh run list --workflow claude.yml`. Report the workflow status.
 - **Cycle stall** — if no progress is made in a full cycle (nothing to trigger, nothing to merge, everything waiting), report the stall and ask the user what to do.
+
+## Calendar Sync
+
+After every orchestrate run — at the end of each auto-mode cycle (A4) and at the end of a batch run (B5) — invoke the `sync` skill:
+
+```
+Use the sync skill to reconcile the calendar
+```
+
+This places or updates decision slots for all open `human`-labeled issues and removes slots for issues that have been closed or re-labeled. It is a fire-and-forget step: if the Google Calendar MCP tools are unavailable, report the failure and continue — it does not block orchestration.
+
+This hook exists until `conductr sync` is scheduled as a standalone Rust cron subcommand. Once that is in place, remove this step.
 
 ## Important
 
