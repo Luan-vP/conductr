@@ -9,6 +9,11 @@ when to stop. Process steps live in [`../operations/`](../operations/).
   survey → classify → execute → wait loop, with polling intervals and
   timeout windows.
 
+## ADR
+
+The vocabulary, tempo schema, algorithms, and coordination decisions are
+recorded in [`docs/cadence.md`](../../docs/cadence.md).
+
 ## Skills
 
 These cadences are implemented by:
