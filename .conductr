@@ -5,9 +5,23 @@ project_tag = "conductr"
 repo        = "Luan-vP/conductr"
 
 [band]
-# Agent band roster.
-agents         = ["claude"]
 human_assignee = "Luan-vP"
+
+[band.defaults]
+# Default voicing per role for tmux-pane execution.
+# Web-runner beats use whatever GH Actions Claude Code is configured with — not set here.
+architect    = "opus"
+implementer  = "sonnet"
+reviewer     = "sonnet"
+tester       = "haiku"
+security     = "haiku"
+doc-writer   = "sonnet"
+idle-sweeper = "opus"
+
+[orchestrate]
+max_parallel_beats   = 3        # agent<n> slot cap
+max_parallel_qa      = 2        # qa<n> slot cap
+tmux_complexity_min  = "L"      # escalate to tmux at this complexity or above
 
 [cadence]
 # Per-task cron expressions. The host crontab is the source of truth for now;

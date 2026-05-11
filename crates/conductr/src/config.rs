@@ -35,12 +35,70 @@ impl Default for CiSection {
 
 fn default_timeout_secs() -> u64 { 900 }
 
+/// Anthropic model voicing for a role slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VoiceModel {
+    Opus,
+    Sonnet,
+    Haiku,
+}
+
+/// Default model voicings per role for tmux-pane execution.
+/// Unknown role keys are rejected (`deny_unknown_fields`).
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct BandDefaults {
+    pub architect: Option<VoiceModel>,
+    pub implementer: Option<VoiceModel>,
+    pub reviewer: Option<VoiceModel>,
+    pub tester: Option<VoiceModel>,
+    pub security: Option<VoiceModel>,
+    #[serde(rename = "doc-writer")]
+    pub doc_writer: Option<VoiceModel>,
+    #[serde(rename = "idle-sweeper")]
+    pub idle_sweeper: Option<VoiceModel>,
+}
+
+/// The `[band]` section of `.conductr`.
+#[derive(Debug, Deserialize, Default)]
+pub struct BandSection {
+    pub human_assignee: Option<String>,
+    #[serde(default)]
+    pub defaults: BandDefaults,
+}
+
+/// Complexity tier used to decide whether to escalate to a tmux pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum Complexity {
+    S,
+    M,
+    L,
+    #[serde(rename = "XL")]
+    Xl,
+}
+
+/// The `[orchestrate]` section of `.conductr`.
+#[derive(Debug, Deserialize, Default)]
+pub struct OrchestrateSection {
+    /// Maximum number of parallel `agent<n>` slots.
+    pub max_parallel_beats: Option<u32>,
+    /// Maximum number of parallel `qa<n>` slots.
+    pub max_parallel_qa: Option<u32>,
+    /// Escalate to tmux at this complexity tier or above.
+    pub tmux_complexity_min: Option<Complexity>,
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct RawConfig {
     #[serde(default)]
     pub local: LocalSection,
     #[serde(default)]
     pub ci: CiSection,
+    #[serde(default)]
+    pub band: BandSection,
+    #[serde(default)]
+    pub orchestrate: OrchestrateSection,
 }
 
 /// Read the `[local]` section from `.conductr` in `repo_path`.
@@ -53,6 +111,18 @@ pub fn read_local_section(repo_path: &Path) -> Result<LocalSection> {
 /// Returns defaults when the file or section is absent.
 pub fn read_ci_section(repo_path: &Path) -> Result<CiSection> {
     read_raw(repo_path).map(|c| c.ci)
+}
+
+/// Read the `[band]` section from `.conductr` in `repo_path`.
+/// Returns defaults when the file or section is absent.
+pub fn read_band_section(repo_path: &Path) -> Result<BandSection> {
+    read_raw(repo_path).map(|c| c.band)
+}
+
+/// Read the `[orchestrate]` section from `.conductr` in `repo_path`.
+/// Returns defaults when the file or section is absent.
+pub fn read_orchestrate_section(repo_path: &Path) -> Result<OrchestrateSection> {
+    read_raw(repo_path).map(|c| c.orchestrate)
 }
 
 fn read_raw(repo_path: &Path) -> Result<RawConfig> {
@@ -127,5 +197,118 @@ mode = "github"
 "#;
         let cfg: RawConfig = toml::from_str(raw).unwrap();
         assert_eq!(cfg.ci.mode, CiMode::Github);
+    }
+
+    // ── [band] + [band.defaults] ──────────────────────────────────────────────
+
+    #[test]
+    fn band_section_parses_human_assignee_and_defaults() {
+        let raw = r#"
+[band]
+human_assignee = "Luan-vP"
+
+[band.defaults]
+architect    = "opus"
+implementer  = "sonnet"
+reviewer     = "sonnet"
+tester       = "haiku"
+security     = "haiku"
+doc-writer   = "sonnet"
+idle-sweeper = "opus"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.band.human_assignee.as_deref(), Some("Luan-vP"));
+        assert_eq!(cfg.band.defaults.architect, Some(VoiceModel::Opus));
+        assert_eq!(cfg.band.defaults.implementer, Some(VoiceModel::Sonnet));
+        assert_eq!(cfg.band.defaults.reviewer, Some(VoiceModel::Sonnet));
+        assert_eq!(cfg.band.defaults.tester, Some(VoiceModel::Haiku));
+        assert_eq!(cfg.band.defaults.security, Some(VoiceModel::Haiku));
+        assert_eq!(cfg.band.defaults.doc_writer, Some(VoiceModel::Sonnet));
+        assert_eq!(cfg.band.defaults.idle_sweeper, Some(VoiceModel::Opus));
+    }
+
+    #[test]
+    fn band_defaults_absent_gives_nones() {
+        let raw = r#"project_tag = "test""#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert!(cfg.band.human_assignee.is_none());
+        assert!(cfg.band.defaults.architect.is_none());
+    }
+
+    #[test]
+    fn band_defaults_partial_is_allowed() {
+        let raw = r#"
+[band.defaults]
+architect = "sonnet"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.band.defaults.architect, Some(VoiceModel::Sonnet));
+        assert!(cfg.band.defaults.implementer.is_none());
+    }
+
+    #[test]
+    fn band_defaults_rejects_unknown_role() {
+        let raw = r#"
+[band.defaults]
+architect = "opus"
+unknown-role = "sonnet"
+"#;
+        let result: Result<RawConfig, _> = toml::from_str(raw);
+        assert!(result.is_err(), "unknown role should be rejected");
+    }
+
+    #[test]
+    fn band_defaults_rejects_invalid_model() {
+        let raw = r#"
+[band.defaults]
+architect = "gpt-4"
+"#;
+        let result: Result<RawConfig, _> = toml::from_str(raw);
+        assert!(result.is_err(), "invalid model name should be rejected");
+    }
+
+    // ── [orchestrate] ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn orchestrate_section_parses_all_fields() {
+        let raw = r#"
+[orchestrate]
+max_parallel_beats  = 3
+max_parallel_qa     = 2
+tmux_complexity_min = "L"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.orchestrate.max_parallel_beats, Some(3));
+        assert_eq!(cfg.orchestrate.max_parallel_qa, Some(2));
+        assert_eq!(cfg.orchestrate.tmux_complexity_min, Some(Complexity::L));
+    }
+
+    #[test]
+    fn orchestrate_section_defaults_when_absent() {
+        let raw = r#"project_tag = "test""#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert!(cfg.orchestrate.max_parallel_beats.is_none());
+        assert!(cfg.orchestrate.max_parallel_qa.is_none());
+        assert!(cfg.orchestrate.tmux_complexity_min.is_none());
+    }
+
+    #[test]
+    fn orchestrate_complexity_xl_parses() {
+        let raw = r#"
+[orchestrate]
+tmux_complexity_min = "XL"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.orchestrate.tmux_complexity_min, Some(Complexity::Xl));
+    }
+
+    #[test]
+    fn orchestrate_complexity_invalid_is_rejected() {
+        let raw = r#"
+[orchestrate]
+tmux_complexity_min = "huge"
+"#;
+        let result: Result<RawConfig, _> = toml::from_str(raw);
+        assert!(result.is_err(), "invalid complexity value should be rejected");
     }
 }
