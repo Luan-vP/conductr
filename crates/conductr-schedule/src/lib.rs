@@ -1,10 +1,10 @@
 //! Time patterns described in musical notation.
 //!
 //! Seed concept (from `Conductor life scheduler`):
-//!   - Use **6/4** for a full day: 1 quarter note = 4 hours, 6 beats = 24 h.
+//!   - Use **6 bars** for a full day: `bar_duration 4h`, 6 bars = 24 h.
 //!   - Encode sleep vs wake by tag (low register = sleep, high = wake).
-//!   - Subdivide a beat into demisemiquavers (32nds) to show wake textures
-//!     inside a sleep block. With q=4h, 1 thirty-second ≈ 30 min.
+//!   - Subdivide a bar (whole note) into eighth notes for 30-min textures
+//!     inside a sleep block. With bar=4h, 1 eighth = 30 min.
 
 pub mod notation;
 pub mod pattern;

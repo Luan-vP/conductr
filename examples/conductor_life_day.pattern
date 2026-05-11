@@ -1,15 +1,19 @@
-# One day in 6/4 — the conductor life scheduler.
+# One day as 6 bars — the conductor life scheduler.
 #
 # Mapping:
-#   - 1 quarter note = 4 hours
-#   - Full bar (6 quarters) = 24 hours
-#   - 1 demisemiquaver (32nd) = 30 minutes
+#   - bar_duration 4h  →  1 bar = 4 hours
+#   - 6 bars           →  1 day = 24 hours
+#   - 1 eighth note    →  4h / 8 = 30 minutes  (subdivision resolution)
 #
-# The third beat below contains a "second sleep" texture: a quarter
-# subdivided into eight 32nd-notes alternating wake/sleep at 30-minute
+# The third bar below contains a "second sleep" texture: a whole note
+# subdivided into eight eighth-notes alternating wake/sleep at 30-minute
 # resolution.
 
-time_signature 6/4
-quarter_duration 4h
+bar_duration 4h
 
-| sleep:q | sleep:q | sleep:q[wake:t,sleep:t,wake:t,sleep:t,wake:t,sleep:t,wake:t,sleep:t] | wake:q | work:q | rest:q |
+| sleep:w |
+| sleep:w |
+| sleep:w[wake:e,sleep:e,wake:e,sleep:e,wake:e,sleep:e,wake:e,sleep:e] |
+| wake:w |
+| work:w |
+| rest:w |

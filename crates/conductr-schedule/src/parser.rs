@@ -3,11 +3,15 @@
 //! Example:
 //!
 //! ```text
-//! # conductor life scheduler — one day in 6/4
-//! time_signature 6/4
-//! quarter_duration 4h
+//! # conductor life scheduler — one day as 6 bars
+//! bar_duration 4h
 //!
-//! | sleep:q | sleep:q | sleep:q[wake:t,sleep:t,wake:t,sleep:t,wake:t,sleep:t,wake:t,sleep:t] | wake:q | work:q | rest:q |
+//! | sleep:w |
+//! | sleep:w |
+//! | sleep:w[wake:e,sleep:e,wake:e,sleep:e,wake:e,sleep:e,wake:e,sleep:e] |
+//! | wake:w |
+//! | work:w |
+//! | rest:w |
 //! ```
 //!
 //! Grammar (informal):
@@ -17,7 +21,7 @@
 //! line        := comment | config | bar | empty
 //! comment     := '#' ANY*
 //! config      := key SP value
-//! key         := 'time_signature' | 'quarter_duration'
+//! key         := 'bar_duration'
 //! bar         := '|' (beat '|')+
 //! beat        := tag ':' note_value ( '[' beat (',' beat)* ']' )?
 //! tag         := [A-Za-z_][A-Za-z0-9_-]*
@@ -27,7 +31,7 @@
 use std::time::Duration;
 
 use crate::notation::{NoteValue, Tempo, TimeSignature};
-use crate::pattern::{Bar, Beat, BeatContent, Pattern};
+use crate::pattern::{Bar, Beat, BeatContent, Pattern, PatternError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
@@ -41,10 +45,12 @@ pub enum ParseError {
     Validation(#[from] crate::pattern::PatternError),
 }
 
+/// Default bar duration: 4 hours.
+const DEFAULT_BAR_SECS: u64 = 4 * 3600;
+
 pub fn parse(src: &str) -> Result<Pattern, ParseError> {
-    let mut time_signature: Option<TimeSignature> = None;
-    let mut tempo: Option<Tempo> = None;
-    let mut bars: Vec<Bar> = Vec::new();
+    let mut bar_duration_secs: u64 = DEFAULT_BAR_SECS;
+    let mut all_beats: Vec<Vec<Beat>> = Vec::new();
 
     for (i, raw) in src.lines().enumerate() {
         let line_no = i + 1;
@@ -54,9 +60,8 @@ pub fn parse(src: &str) -> Result<Pattern, ParseError> {
         }
 
         if line.starts_with('|') {
-            let ts = time_signature.ok_or(ParseError::MissingDirective("time_signature"))?;
-            let bar = parse_bar(line, line_no, ts)?;
-            bars.push(bar);
+            let beats = parse_bar_beats(line, line_no)?;
+            all_beats.push(beats);
             continue;
         }
 
@@ -65,16 +70,42 @@ pub fn parse(src: &str) -> Result<Pattern, ParseError> {
             msg: "expected `key value`".into(),
         })?;
         match key {
-            "time_signature" => time_signature = Some(parse_time_sig(rest.trim(), line_no)?),
-            "quarter_duration" => tempo = Some(Tempo::from_quarter(parse_duration(rest.trim(), line_no)?)),
+            "bar_duration" => {
+                bar_duration_secs = parse_duration(rest.trim(), line_no)?.as_secs()
+            }
             other => {
                 return Err(ParseError::UnknownDirective { line: line_no, key: other.into() })
             }
         }
     }
 
-    let time_signature = time_signature.ok_or(ParseError::MissingDirective("time_signature"))?;
-    let tempo = tempo.ok_or(ParseError::MissingDirective("quarter_duration"))?;
+    // Infer time signature from the first bar's beat structure.
+    let first_in_64ths: u32 = all_beats
+        .first()
+        .map(|beats| beats.iter().map(|b| b.in_64ths()).sum())
+        .unwrap_or_else(|| NoteValue::Quarter.in_64ths() * 4); // default 4/4
+
+    // All bars must have the same total 64th count.
+    for (j, beats) in all_beats.iter().enumerate() {
+        let sum: u32 = beats.iter().map(|b| b.in_64ths()).sum();
+        if sum != first_in_64ths {
+            return Err(ParseError::Validation(PatternError::BarLengthMismatch {
+                bar: j,
+                expected: first_in_64ths,
+                actual: sum,
+            }));
+        }
+    }
+
+    // Express bar length as N quarter notes (N/4 time signature).
+    let beats_per_bar = first_in_64ths / NoteValue::Quarter.in_64ths();
+    let time_signature = TimeSignature { beats_per_bar, beat_unit: NoteValue::Quarter };
+    let tempo = Tempo::from_bar_secs(bar_duration_secs, first_in_64ths);
+
+    let bars = all_beats
+        .into_iter()
+        .map(|beats| Bar { time_signature, beats })
+        .collect();
 
     let pattern = Pattern { time_signature, tempo, bars };
     pattern.validate()?;
@@ -85,35 +116,23 @@ fn strip_comment(s: &str) -> &str {
     s.split_once('#').map(|(a, _)| a).unwrap_or(s)
 }
 
-fn parse_time_sig(s: &str, line: usize) -> Result<TimeSignature, ParseError> {
-    let (top, bottom) = s.split_once('/').ok_or_else(|| ParseError::Syntax {
-        line,
-        msg: format!("invalid time signature `{s}` (expected N/D)"),
-    })?;
-    let beats_per_bar: u32 = top.trim().parse().map_err(|_| ParseError::Syntax {
-        line,
-        msg: format!("non-numeric beats `{top}`"),
-    })?;
-    let denom: u32 = bottom.trim().parse().map_err(|_| ParseError::Syntax {
-        line,
-        msg: format!("non-numeric denominator `{bottom}`"),
-    })?;
-    let beat_unit = match denom {
-        1 => NoteValue::Whole,
-        2 => NoteValue::Half,
-        4 => NoteValue::Quarter,
-        8 => NoteValue::Eighth,
-        16 => NoteValue::Sixteenth,
-        32 => NoteValue::ThirtySecond,
-        64 => NoteValue::SixtyFourth,
-        _ => {
-            return Err(ParseError::Syntax {
-                line,
-                msg: format!("unsupported denominator {denom}"),
-            })
+/// Parse the beats inside a bar line; subdivision validation is done here.
+fn parse_bar_beats(line: &str, line_no: usize) -> Result<Vec<Beat>, ParseError> {
+    let inner = line.trim_start_matches('|').trim_end_matches('|');
+    let beat_sources = split_top_level(inner, '|');
+    let mut beats = Vec::with_capacity(beat_sources.len());
+    for src in beat_sources {
+        let s = src.trim();
+        if s.is_empty() {
+            continue;
         }
-    };
-    Ok(TimeSignature { beats_per_bar, beat_unit })
+        beats.push(parse_beat(s, line_no)?);
+    }
+    // Validate subdivision consistency (not bar-level length — deferred to parse()).
+    for beat in &beats {
+        beat.validate().map_err(ParseError::Validation)?;
+    }
+    Ok(beats)
 }
 
 /// Parse a duration like `4h`, `30m`, `90s`, `1h30m`.
@@ -156,35 +175,18 @@ fn parse_duration(s: &str, line: usize) -> Result<Duration, ParseError> {
     Ok(Duration::from_secs(total))
 }
 
-fn parse_bar(line: &str, line_no: usize, ts: TimeSignature) -> Result<Bar, ParseError> {
-    // Strip leading and trailing `|`, then split on top-level `|`.
-    let inner = line.trim_start_matches('|').trim_end_matches('|');
-    let beat_sources = split_top_level(inner, '|');
-    let mut beats = Vec::with_capacity(beat_sources.len());
-    for src in beat_sources {
-        let s = src.trim();
-        if s.is_empty() {
-            continue;
-        }
-        beats.push(parse_beat(s, line_no)?);
-    }
-    let bar = Bar { time_signature: ts, beats };
-    // Bar-level validation surfaces with the actual line index (best-effort).
-    bar.validate_at(0).map_err(ParseError::Validation)?;
-    Ok(bar)
-}
-
 fn parse_beat(src: &str, line: usize) -> Result<Beat, ParseError> {
     let (tag, rest) = src.split_once(':').ok_or_else(|| ParseError::Syntax {
         line,
         msg: format!("beat `{src}` missing `:value`"),
     })?;
     let tag = tag.trim();
-    if tag.is_empty() || !tag.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false) {
+    if tag.is_empty()
+        || !tag.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false)
+    {
         return Err(ParseError::Syntax { line, msg: format!("invalid tag `{tag}`") });
     }
     let rest = rest.trim();
-    // Either `x` or `x[children]`.
     let (value_letter, subdiv) = match rest.find('[') {
         Some(i) => {
             if !rest.ends_with(']') {
@@ -247,34 +249,51 @@ mod tests {
     use super::*;
 
     const CONDUCTOR_LIFE_DAY: &str = r#"
-        # one day in 6/4
-        time_signature 6/4
-        quarter_duration 4h
+        # one day as 6 bars
+        bar_duration 4h
 
-        | sleep:q | sleep:q | sleep:q[wake:t,sleep:t,wake:t,sleep:t,wake:t,sleep:t,wake:t,sleep:t] | wake:q | work:q | rest:q |
+        | sleep:w |
+        | sleep:w |
+        | sleep:w[wake:e,sleep:e,wake:e,sleep:e,wake:e,sleep:e,wake:e,sleep:e] |
+        | wake:w |
+        | work:w |
+        | rest:w |
     "#;
 
     #[test]
     fn parses_canonical_day() {
         let p = parse(CONDUCTOR_LIFE_DAY).unwrap();
-        assert_eq!(p.time_signature, TimeSignature::SIX_FOUR);
-        assert_eq!(p.bars.len(), 1);
-        assert_eq!(p.bars[0].beats.len(), 6);
+        // 6 bars × 4 h = 24 h.
+        assert_eq!(p.bars.len(), 6);
         assert_eq!(p.total_duration(), Duration::from_secs(24 * 3600));
+        // bar_duration 4h → whole note = 4h, eighth = 30 min.
+        assert_eq!(p.tempo.note_duration(NoteValue::Whole), Duration::from_secs(4 * 3600));
+        assert_eq!(p.tempo.note_duration(NoteValue::Eighth), Duration::from_secs(30 * 60));
+        // 5 whole-note beats + 8 eighth-note subdivisions = 13 leaves.
         let leaves = p.leaves();
         assert_eq!(leaves.len(), 13);
     }
 
     #[test]
-    fn rejects_short_bar() {
-        let src = "time_signature 4/4\nquarter_duration 1h\n| x:q | x:q | x:q |";
+    fn rejects_inconsistent_bars() {
+        // First bar is a whole note (64 64ths), second is a quarter (16 64ths).
+        let src = "bar_duration 4h\n| x:w |\n| x:q |";
         assert!(parse(src).is_err());
     }
 
     #[test]
     fn parses_compound_duration() {
-        let src = "time_signature 4/4\nquarter_duration 1h30m\n| x:q | x:q | x:q | x:q |";
+        // bar_duration 6h with a 4-quarter bar → quarter = 6h/4 = 1h30m.
+        let src = "bar_duration 6h\n| x:q | x:q | x:q | x:q |";
         let p = parse(src).unwrap();
         assert_eq!(p.tempo.quarter(), Duration::from_secs(5400));
+    }
+
+    #[test]
+    fn default_bar_duration_is_4h() {
+        // Omitting bar_duration should default to 4h.
+        let src = "| x:w |";
+        let p = parse(src).unwrap();
+        assert_eq!(p.tempo.note_duration(NoteValue::Whole), Duration::from_secs(4 * 3600));
     }
 }

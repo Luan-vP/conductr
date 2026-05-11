@@ -146,37 +146,44 @@ conductr run-task    --prompt <text> | --prompt-file <path> [--provider <name>] 
 
 ### Pattern DSL
 
-Anchor the day to a quarter-note duration and lay out beats per bar:
+Set the bar duration and lay out bars (one whole note per bar):
 
 ```text
-time_signature 6/4
-quarter_duration 4h
+bar_duration 4h
 
-| sleep:q | sleep:q | sleep:q[wake:t,sleep:t,wake:t,sleep:t,wake:t,sleep:t,wake:t,sleep:t] | wake:q | work:q | rest:q |
+| sleep:w |
+| sleep:w |
+| sleep:w[wake:e,sleep:e,wake:e,sleep:e,wake:e,sleep:e,wake:e,sleep:e] |
+| wake:w |
+| work:w |
+| rest:w |
 ```
 
-- `w h q e s t x` = whole, half, quarter, eighth, 16th, **32nd (demisemiquaver)**, 64th.
+- `bar_duration` sets wall-clock time for one bar (default: 4h).
+- `w h q e s t x` = whole, half, quarter, eighth, 16th, 32nd, 64th.
+- With `bar_duration 4h`: whole = 4h, eighth = 30 min.
 - `tag:value` is one beat; `tag:value[child,child,...]` is a subdivided beat.
-- Validation enforces that subdivisions sum to the parent and bars sum to the time signature.
+- Validation enforces that subdivisions sum to the parent and all bars have the same total duration.
+- A day is **6 bars** (`6 × 4h = 24h`).
 
 `conductr schedule render examples/conductor_life_day.pattern` produces:
 
 ```text
-Pattern: 6/4 time, q=4h
+Pattern: 4/4 time, q=1h
 ──────────────────────────────────────────────
-        0s  +4h          q  sleep
-        4h  +4h          q  sleep
-        8h  +30m         t  wake
-     8h30m  +30m         t  sleep
-        9h  +30m         t  wake
-     9h30m  +30m         t  sleep
-       10h  +30m         t  wake
-    10h30m  +30m         t  sleep
-       11h  +30m         t  wake
-    11h30m  +30m         t  sleep
-       12h  +4h          q  wake
-       16h  +4h          q  work
-       20h  +4h          q  rest
+        0s  +4h          w  sleep
+        4h  +4h          w  sleep
+        8h  +30m         e  wake
+     8h30m  +30m         e  sleep
+        9h  +30m         e  wake
+     9h30m  +30m         e  sleep
+       10h  +30m         e  wake
+    10h30m  +30m         e  sleep
+       11h  +30m         e  wake
+    11h30m  +30m         e  sleep
+       12h  +4h          w  wake
+       16h  +4h          w  work
+       20h  +4h          w  rest
 ```
 
 ### Begin (cron entry point)
