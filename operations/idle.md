@@ -47,9 +47,19 @@ mechanically checks three of them:
 | 3 | Adapters must not depend on use-case crates. | Same. |
 | 4 | `conductr-core` has no I/O dependencies (`tokio`, `reqwest`, `hyper`, etc.). | Denylist check against core's `[dependencies]`. |
 
-Rules 2, 5, and 6 require source-level analysis (`use` paths, mock locations,
-port-trait counts) and are deferred. Each violation becomes a `Finding` with
-severity `Architecture`.
+**LLM-powered audit (delegated).** Rules 2, 5, and 6 — which require
+source-level analysis (`use` paths, mock locations, port-trait counts) — and
+any broader structural review are handled by the **architect** skill. Idle
+delegates by invoking:
+
+```
+conductr architect review
+```
+
+This opens or reuses the `conductr-architect` pod session, starts Claude if
+needed, and sends `/architect review` to run the full hexagonal audit
+(including `check_cli_skill_parity`). Findings emitted by the architect skill
+are filed as issues in phase 4. Idle does not duplicate this analysis inline.
 
 ### 3. Module pick + scan
 
