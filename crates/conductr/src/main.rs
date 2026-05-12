@@ -174,6 +174,9 @@ struct CadenceShowArgs {
     /// Render as if it were this UTC instant (ISO-8601, e.g. `2026-05-10T14:23:00Z`).
     #[arg(long)]
     at: Option<String>,
+    /// Show every conductr cron entry across all project tags (reads the live crontab).
+    #[arg(long)]
+    all: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -1321,10 +1324,15 @@ fn run_cadence(args: CadenceArgs) -> Result<()> {
             Ok(())
         }
         CadenceCmd::Show(a) => {
-            let repo = a.repo.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
             let at = a.at.as_deref().map(parse_utc_datetime).transpose()?;
-            let report = cadence::show(&repo, at)?;
-            print!("{report}");
+            if a.all {
+                let report = cadence::show_all(at)?;
+                print!("{report}");
+            } else {
+                let repo = a.repo.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                let report = cadence::show(&repo, at)?;
+                print!("{report}");
+            }
             Ok(())
         }
     }
