@@ -121,17 +121,22 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+    use std::sync::Mutex;
 
-    // Serialise env-var mutation across tests that share LLAMACPP_HOST.
+    // Serialise tests that mutate LLAMACPP_HOST to avoid races in the parallel test harness.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn from_env_uses_default_host() {
         let _guard = ENV_LOCK.lock().unwrap();
         // SAFETY: protected by ENV_LOCK; no other thread touches LLAMACPP_HOST.
+        let prev = std::env::var("LLAMACPP_HOST").ok();
         unsafe { std::env::remove_var("LLAMACPP_HOST") };
         let adapter = LlamaCpp::from_env();
         assert_eq!(adapter.host, DEFAULT_HOST);
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("LLAMACPP_HOST", v) };
+        }
     }
 
     #[test]
@@ -144,10 +149,14 @@ mod tests {
     fn from_env_reads_custom_host() {
         let _guard = ENV_LOCK.lock().unwrap();
         // SAFETY: protected by ENV_LOCK; no other thread touches LLAMACPP_HOST.
+        let prev = std::env::var("LLAMACPP_HOST").ok();
         unsafe { std::env::set_var("LLAMACPP_HOST", "http://custom:1234") };
         let adapter = LlamaCpp::from_env();
         assert_eq!(adapter.host, "http://custom:1234");
-        unsafe { std::env::remove_var("LLAMACPP_HOST") };
+        match prev {
+            Some(v) => unsafe { std::env::set_var("LLAMACPP_HOST", v) },
+            None => unsafe { std::env::remove_var("LLAMACPP_HOST") },
+        }
     }
 
     /// Integration test: requires a real `llama-server` at `LLAMACPP_HOST`.
