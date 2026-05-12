@@ -132,7 +132,8 @@ in [`operations/`](operations/).
 ## CLI
 
 ```text
-conductr begin       --tag <tag> [--repo <owner/repo>] [--cwd <path>] [--continuous] [--dry-run]
+conductr begin                              [--repo <path>] [--dry-run]
+conductr begin <skill> [schedule]           [--repo <path>] [--dry-run]
 conductr orchestrate --repo owner/repo [--dry-run] [--once] [--poll-secs 60]
 conductr instance    spin-up --name <name> | list
 conductr schedule    validate <pattern.txt> | render <pattern.txt>
@@ -188,63 +189,56 @@ Pattern: 4/4 time, q=1h
        20h  +4h          w  rest
 ```
 
-### Begin (cron entry point)
+### Begin (cadence configurator)
 
-`conductr begin` is the single command you put in a cron line. It is
-idempotent and safe to fire on a schedule.
+`conductr begin` is a **function-only** command that configures `.conductr [cadence]`
+and then runs `cadence sync` to install the cron entries. It never touches tmux or
+starts Claude.
 
-```cron
-# Trigger an orchestrate pass every 30 minutes for the conductr repo.
-*/30 * * * * conductr begin --tag conductr --repo Luan-vP/conductr
-```
-
-What it does on each tick:
-
-1. **Session lookup / create** — looks for a tmux session named
-   `conductr-<tag>`. If absent, creates it with
-   `tmux new-session -d -s conductr-<tag>`.
-2. **Health check** — classifies the session via the same heuristics as
-   `conductr pod diagnose`.
-   - `working` → logs "already busy" and exits 0 (next tick will retry).
-   - `crashed` → restarts Claude before sending the prompt.
-   - `idle` or `created` → proceeds to send the orchestrate prompt.
-3. **Orchestrate trigger** — sends
-   `conductr orchestrate --repo <owner/repo> --once` as the user prompt.
-   With `--continuous`, the `--once` flag is omitted and Claude drives its
-   own polling loop.
-4. **Exits 0** — whether it acted or skipped. Non-zero only on real errors
-   (tmux not installed, bad config, etc.).
-
-**Auto mode** is enabled via the `--dangerously-skip-permissions` CLI flag
-passed to Claude Code on startup. This makes Claude auto-approve all tool
-calls — the right choice for unattended cron operation.
-
-**Remote control** is tmux-based: `conductr begin` uses
-`tmux send-keys` to inject the orchestrate prompt into the session's active
-pane, exactly as `conductr pod heal` and `conductr pod save-state` do.
-
-**Lockfile** at `~/.conductr/begin-<tag>.lock` (PID-based) prevents two
-cron ticks from racing on the same tag. A stale lock (PID dead) is silently
-reaped and the tick proceeds.
-
-Use `--dry-run` to inspect the current session state and see the plan
-without touching tmux:
+**Form 1 — no arguments:** write defaults and sync.
 
 ```bash
-conductr begin --tag conductr --repo Luan-vP/conductr --dry-run
-# plan: session 'conductr-conductr' does not exist
-# plan: cwd = /home/user/conductr
-# plan:  would create session 'conductr-conductr'
-# plan:  would start Claude: `claude --dangerously-skip-permissions`
-# plan:  would send: `conductr orchestrate --repo Luan-vP/conductr --once`
+conductr begin
+```
+
+Ensures `orchestrate` and `idle` are present in `.conductr [cadence]` (with the
+default schedule `*/30 * * * *`), then runs `cadence sync` to install the cron lines.
+If `.conductr` does not exist it is initialised first.
+
+**Form 2 — add a specific skill:**
+
+```bash
+conductr begin orchestrate "0 */4 * * *"   # every 4 hours
+conductr begin idle        "17 * * * *"    # at :17 past each hour
+conductr begin architect   "0 8 * * 1"     # mondays at 08:00
+```
+
+Adds `<skill>` to `[cadence]` with the given cron expression (default `*/30 * * * *`
+if omitted), then syncs. The skill must be a recognised top-level `conductr` command.
+
+After running `begin`, the installed cron lines invoke each CLI command directly:
+
+```cron
+# conductr-cron: conductr-orchestrate
+*/30 * * * * bash -lc 'conductr orchestrate --repo Luan-vP/conductr --once' >> ~/.local/share/conductr/orchestrate.log 2>&1
+
+# conductr-cron: conductr-idle
+*/30 * * * * bash -lc 'conductr idle' >> ~/.local/share/conductr/idle.log 2>&1
+```
+
+Commands that are Claude-required (like `architect` and `idle`) handle their own
+tmux + Claude bootstrap when invoked from cron.
+
+Use `--dry-run` to preview changes without writing:
+
+```bash
+conductr begin --dry-run
+# plan: would write defaults (orchestrate, idle) to .conductr [cadence] if absent
+# plan: would run cadence sync
 ```
 
 **Relationship to #19 (tempo):** use your project's tempo bucket to pick
 the cron interval — e.g. a 30-minute tempo maps to `*/30 * * * *`.
-
-**Relationship to #22 (tag namespacing):** `--tag` is currently a free
-string; once #22 lands the convention will be documented there and `begin`
-will consume whatever `--tag` semantics #22 defines.
 
 ### Orchestrate
 
@@ -391,7 +385,7 @@ future work.
 
 ## Bootstrap
 
-To bring any repository to **L5 Orchestrated** and hand it off to `conductr begin`:
+To bring any repository to **L5 Orchestrated**:
 
 ```bash
 conductr setup wizard            # step through the maturity checklist
@@ -402,17 +396,28 @@ The wizard automates fixable checks (CI workflow, `.gitignore`, CODEOWNERS,
 `.github/workflows/claude.yml`) and prints a URL for the one manual step
 (installing the Claude GitHub App).
 
-Once the repo reaches L5, create `.conductr` at the repo root (see the file
-in this repo for the canonical schema), then add a cron line:
+Once the repo reaches L5, run `conductr begin` at the repo root. It will
+initialise `.conductr` (if absent), write default cadence entries, and install
+the cron lines in one shot:
 
-```cron
-0 */4 * * * conductr begin --tag <tag> --repo <owner/repo>
+```bash
+conductr begin
 ```
 
-**This repo** is bootstrapped as:
+This installs cron entries that invoke `conductr orchestrate` and `conductr idle`
+directly. **This repo** uses:
+
+```toml
+# .conductr [cadence]
+orchestrate = "*/30 * * * *"
+idle        = "*/30 * * * *"
+```
+
+Which produces cron lines of the form:
 
 ```cron
-0 */4 * * * conductr begin --tag conductr --repo Luan-vP/conductr
+*/30 * * * * bash -lc 'conductr orchestrate --repo Luan-vP/conductr --once' >> ~/.local/share/conductr/orchestrate.log 2>&1
+*/30 * * * * bash -lc 'conductr idle' >> ~/.local/share/conductr/idle.log 2>&1
 ```
 
 Project configuration lives in `.conductr` at the repo root. `[tempo]` entries

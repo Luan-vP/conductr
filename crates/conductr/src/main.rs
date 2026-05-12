@@ -73,7 +73,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
-    /// Cron-friendly entry point: ensure a tmux session exists and trigger an orchestrate pass.
+    /// Cadence configurator: write defaults or add a skill to `.conductr [cadence]`, then sync.
     Begin(BeginArgs),
     /// Drive `@claude` GitHub-issue orchestration.
     Orchestrate(OrchestrateArgs),
@@ -177,19 +177,14 @@ struct CadenceShowArgs {
 
 #[derive(Debug, Parser)]
 struct BeginArgs {
-    /// Project tag — the tmux session will be named `conductr-<tag>`.
+    /// Skill to add to `[cadence]`. Omit to write defaults (`orchestrate` + `idle`).
+    skill: Option<String>,
+    /// Cron expression (e.g. `*/30 * * * *`). Only used with `<skill>`. Defaults to `*/30 * * * *`.
+    schedule: Option<String>,
+    /// Path to the repo root containing `.conductr` (defaults to current directory).
     #[arg(long)]
-    tag: String,
-    /// `owner/repo` slug forwarded to `conductr orchestrate --repo`.
-    #[arg(long)]
-    repo: Option<String>,
-    /// Working directory for the new tmux session (defaults to the current directory).
-    #[arg(long)]
-    cwd: Option<PathBuf>,
-    /// Leave Claude running its own polling loop; omit for a single `--once` pass (cron default).
-    #[arg(long)]
-    continuous: bool,
-    /// Print the plan without creating sessions, starting Claude, or sending keys.
+    repo: Option<PathBuf>,
+    /// Print the planned changes without writing anything or running cadence sync.
     #[arg(long)]
     dry_run: bool,
 }
@@ -444,146 +439,132 @@ fn pod_pattern<'a>(explicit: Option<&'a str>, all: bool) -> Option<&'a str> {
 // begin
 // ---------------------------------------------------------------------------
 
+/// Top-level conductr subcommands that can be scheduled via cadence.
+/// Validated against the parity predicate (CLI command ↔ skill symmetry).
+const SCHEDULABLE_SKILLS: &[&str] = &[
+    "orchestrate", "idle", "architect", "instance", "schedule",
+    "tasks", "pod", "setup", "mail", "local", "run-task",
+];
+
+const DEFAULT_SCHEDULE: &str = "*/30 * * * *";
+
 async fn run_begin(args: BeginArgs) -> Result<()> {
-    let session = format!("conductr-{}-conductr", args.tag);
-    let cwd = args
-        .cwd
-        .map(|p| p.to_string_lossy().into_owned())
-        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| ".".to_string());
+    let repo = args.repo.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
-    // Implicit .conductr init: create the file if absent (non-fatal — we
-    // already have the tag from --tag so the session can proceed either way).
-    let cwd_path = std::path::Path::new(&cwd);
-    if !cwd_path.join(".conductr").exists() {
-        if let Err(e) = config::ensure_dot_conductr(cwd_path) {
-            eprintln!("begin: could not init .conductr in {cwd}: {e}");
+    if let Some(skill) = &args.skill {
+        // Form 2: conductr begin <skill> [schedule]
+        if !SCHEDULABLE_SKILLS.contains(&skill.as_str()) {
+            anyhow::bail!(
+                "'{skill}' is not a known schedulable conductr command.\n\
+                 Valid skills: {}",
+                SCHEDULABLE_SKILLS.join(", ")
+            );
         }
-    }
-
-    let orchestrate_prompt = build_orchestrate_prompt(args.repo.as_deref(), args.continuous);
-
-    // Auto mode via --dangerously-skip-permissions (CLI flag, most cron-friendly).
-    // Remote control is provided by tmux send-keys injection (what conductr already does).
-    let claude_cmd = "claude --dangerously-skip-permissions";
-
-    if args.dry_run {
-        let tmux = Tmux::new();
-        return run_begin_dry(&tmux, &session, &cwd, claude_cmd, &orchestrate_prompt).await;
-    }
-
-    let lock_path = begin_lockfile_path(&args.tag)?;
-    if let Some(pid) = acquire_begin_lock(&lock_path)? {
-        println!(
-            "begin: another conductr begin is already running for tag '{}' (pid {pid}); skipping",
-            args.tag
-        );
-        return Ok(());
-    }
-    let _lock = LockGuard(lock_path);
-
-    let tmux = Tmux::new();
-    let state = ensure_session(&tmux, &session, &cwd)
-        .await
-        .with_context(|| format!("ensuring tmux session '{session}'"))?;
-
-    match &state {
-        SessionState::Existing(Health::Working { activity }) => {
-            println!("begin: session '{session}' is busy ({activity}); skipping");
+        let schedule = args.schedule.as_deref().unwrap_or(DEFAULT_SCHEDULE);
+        if args.dry_run {
+            println!("plan: would add '{skill} = \"{schedule}\"' to .conductr [cadence]");
+            println!("plan: would run cadence sync");
             return Ok(());
         }
-        SessionState::Existing(Health::Unknown { reason }) => {
-            println!("begin: session '{session}' is unclassified ({reason}); skipping");
-            return Ok(());
-        }
-        SessionState::Existing(Health::Crashed { .. }) => {
-            println!("begin: session '{session}' crashed — restarting Claude");
-            tmux.send_line(&session, claude_cmd)
-                .await
-                .context("restarting Claude after crash")?;
-            wait_for_idle(&tmux, &session).await?;
-        }
-        SessionState::Created => {
-            println!("begin: created session '{session}' — starting Claude");
-            tmux.send_line(&session, claude_cmd)
-                .await
-                .context("starting Claude in new session")?;
-            wait_for_idle(&tmux, &session).await?;
-        }
-        SessionState::Existing(Health::Idle { .. }) => {
-            println!("begin: session '{session}' is idle — sending orchestrate prompt");
-        }
-    }
-
-    println!("begin: sending: {orchestrate_prompt}");
-    tmux.send_line(&session, &orchestrate_prompt)
-        .await
-        .context("sending orchestrate prompt")?;
-
-    Ok(())
-}
-
-fn build_orchestrate_prompt(repo: Option<&str>, continuous: bool) -> String {
-    let mut cmd = String::from("conductr orchestrate");
-    if let Some(r) = repo {
-        cmd.push_str(" --repo ");
-        cmd.push_str(r);
-    }
-    if !continuous {
-        cmd.push_str(" --once");
-    }
-    cmd
-}
-
-async fn run_begin_dry(
-    tmux: &Tmux,
-    session: &str,
-    cwd: &str,
-    claude_cmd: &str,
-    orchestrate_prompt: &str,
-) -> Result<()> {
-    let sessions = match tmux.list_sessions().await {
-        Ok(s) => s,
-        Err(TmuxError::NoServer) | Err(TmuxError::NotInstalled) => {
-            println!("plan: tmux not running");
-            println!("plan: → would create session '{session}' at cwd={cwd}");
-            println!("plan: → would start Claude: `{claude_cmd}`");
-            println!("plan: → would send: `{orchestrate_prompt}`");
-            return Ok(());
-        }
-        Err(e) => return Err(e.into()),
-    };
-
-    if sessions.iter().any(|s| s.name == session) {
-        match diagnose_one(tmux, session).await {
-            Ok(d) => {
-                println!("plan: session '{session}' exists ({})", health_label(&d.health));
-                match &d.health {
-                    Health::Working { activity } => {
-                        println!("plan: → would skip (busy: {activity})");
-                    }
-                    Health::Unknown { reason } => {
-                        println!("plan: → would skip (unclassified: {reason})");
-                    }
-                    Health::Crashed { .. } => {
-                        println!("plan: → would restart Claude: `{claude_cmd}`");
-                        println!("plan: → would send: `{orchestrate_prompt}`");
-                    }
-                    Health::Idle { .. } => {
-                        println!("plan: → would send: `{orchestrate_prompt}`");
-                    }
-                }
-            }
-            Err(e) => println!("plan: session '{session}' exists but diagnose failed: {e}"),
+        let added = upsert_cadence_entry(&repo.join(".conductr"), skill, schedule)?;
+        if added {
+            println!("begin: added '{skill}' to [cadence] with schedule '{schedule}'");
+        } else {
+            println!("begin: '{skill}' already present in [cadence]; schedule unchanged");
         }
     } else {
-        println!("plan: session '{session}' does not exist");
-        println!("plan: cwd = {cwd}");
-        println!("plan: → would create session '{session}'");
-        println!("plan: → would start Claude: `{claude_cmd}`");
-        println!("plan: → would send: `{orchestrate_prompt}`");
+        // Form 1: conductr begin (no args) — write defaults
+        if args.dry_run {
+            println!("plan: would write defaults (orchestrate, idle) to .conductr [cadence] if absent");
+            println!("plan: would run cadence sync");
+            return Ok(());
+        }
+        if !repo.join(".conductr").exists() {
+            if let Err(e) = config::ensure_dot_conductr(&repo) {
+                anyhow::bail!("begin: could not init .conductr in {}: {e}", repo.display());
+            }
+        }
+        let conductr_path = repo.join(".conductr");
+        let added_orchestrate = upsert_cadence_entry(&conductr_path, "orchestrate", DEFAULT_SCHEDULE)?;
+        let added_idle = upsert_cadence_entry(&conductr_path, "idle", DEFAULT_SCHEDULE)?;
+        if added_orchestrate {
+            println!("begin: added 'orchestrate' to [cadence] with schedule '{DEFAULT_SCHEDULE}'");
+        }
+        if added_idle {
+            println!("begin: added 'idle' to [cadence] with schedule '{DEFAULT_SCHEDULE}'");
+        }
+        if !added_orchestrate && !added_idle {
+            println!("begin: orchestrate and idle already present in [cadence]");
+        }
     }
+
+    let report = cadence::sync(&repo, false, cadence::Mechanism::Crontab)?;
+    println!("{report}");
     Ok(())
+}
+
+/// Add or verify a `key = "value"` entry in the `[cadence]` section of `.conductr`.
+/// Returns `true` if the entry was added, `false` if it was already present.
+fn upsert_cadence_entry(conductr_path: &std::path::Path, skill: &str, schedule: &str) -> Result<bool> {
+    let content = if conductr_path.exists() {
+        std::fs::read_to_string(conductr_path)
+            .with_context(|| format!("reading {}", conductr_path.display()))?
+    } else {
+        anyhow::bail!(
+            "{} does not exist; run `conductr begin` with a valid repo root",
+            conductr_path.display()
+        );
+    };
+
+    // Check if already present via TOML parse.
+    let existing: toml::Value = toml::from_str(&content)
+        .with_context(|| format!("parsing {}", conductr_path.display()))?;
+    if let Some(toml::Value::Table(cadence)) = existing.get("cadence") {
+        if cadence.contains_key(skill) {
+            return Ok(false);
+        }
+    }
+
+    let new_line = format!("{skill} = \"{schedule}\"");
+    let new_content = insert_into_cadence_section(&content, &new_line);
+    std::fs::write(conductr_path, new_content)
+        .with_context(|| format!("writing {}", conductr_path.display()))?;
+    Ok(true)
+}
+
+/// Insert `new_line` into the `[cadence]` section of a `.conductr` TOML string.
+/// If no `[cadence]` section exists, appends one at the end.
+fn insert_into_cadence_section(content: &str, new_line: &str) -> String {
+    let lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let cadence_idx = lines.iter().position(|l| l.trim() == "[cadence]");
+
+    let mut out: Vec<String> = lines;
+
+    if let Some(idx) = cadence_idx {
+        // Find end of [cadence] section: the next bare section header or EOF.
+        let end = out[idx + 1..]
+            .iter()
+            .position(|l| {
+                let t = l.trim();
+                t.starts_with('[') && !t.starts_with("[[") && !t.is_empty()
+            })
+            .map(|i| idx + 1 + i)
+            .unwrap_or(out.len());
+        out.insert(end, new_line.to_string());
+    } else {
+        // No [cadence] section — append a blank line, header, and the entry.
+        if out.last().map_or(false, |l| !l.is_empty()) {
+            out.push(String::new());
+        }
+        out.push("[cadence]".to_string());
+        out.push(new_line.to_string());
+    }
+
+    let mut result = out.join("\n");
+    if !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
 }
 
 async fn wait_for_idle(tmux: &Tmux, session: &str) -> Result<()> {
@@ -599,45 +580,6 @@ async fn wait_for_idle(tmux: &Tmux, session: &str) -> Result<()> {
         if Instant::now() > deadline {
             anyhow::bail!("timed out waiting for Claude to become idle in session '{session}'");
         }
-    }
-}
-
-fn begin_lockfile_path(tag: &str) -> Result<PathBuf> {
-    let home = std::env::var("HOME").context("HOME env var not set")?;
-    let dir = PathBuf::from(home).join(".conductr");
-    std::fs::create_dir_all(&dir).context("creating ~/.conductr")?;
-    Ok(dir.join(format!("begin-{tag}.lock")))
-}
-
-/// Try to acquire the lock. Returns `Some(pid)` if another process holds it,
-/// `None` if this process now holds it.
-fn acquire_begin_lock(path: &PathBuf) -> Result<Option<u32>> {
-    if path.exists() {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            if let Ok(pid) = content.trim().parse::<u32>() {
-                if pid_alive(pid) {
-                    return Ok(Some(pid));
-                }
-            }
-        }
-        // Stale lock — remove it.
-        let _ = std::fs::remove_file(path);
-    }
-    std::fs::write(path, std::process::id().to_string().as_bytes())
-        .with_context(|| format!("writing lockfile {}", path.display()))?;
-    Ok(None)
-}
-
-fn pid_alive(pid: u32) -> bool {
-    // Linux: /proc/<pid> exists iff the process is alive.
-    std::fs::metadata(format!("/proc/{pid}")).is_ok()
-}
-
-struct LockGuard(PathBuf);
-
-impl Drop for LockGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
     }
 }
 
@@ -1902,5 +1844,46 @@ mod tests {
             resolve_provider(Some(wiring::LocalAgentKind::Ollama)).await.unwrap();
         assert_eq!(kind, wiring::LocalAgentKind::Ollama);
         assert!(model.is_none());
+    }
+
+    // ── insert_into_cadence_section ───────────────────────────────────────────
+
+    #[test]
+    fn insert_adds_entry_when_cadence_section_exists() {
+        let content = "project_tag = \"foo\"\n\n[cadence]\norchestrate = \"*/30 * * * *\"\n";
+        let result = insert_into_cadence_section(content, "idle = \"*/30 * * * *\"");
+        assert!(result.contains("idle = \"*/30 * * * *\""), "got: {result}");
+        assert!(result.contains("orchestrate = \"*/30 * * * *\""), "got: {result}");
+        assert!(result.contains("[cadence]"), "got: {result}");
+        // Only one [cadence] header
+        assert_eq!(result.matches("[cadence]").count(), 1);
+    }
+
+    #[test]
+    fn insert_creates_cadence_section_when_absent() {
+        let content = "project_tag = \"bar\"\nrepo = \"owner/bar\"\n";
+        let result = insert_into_cadence_section(content, "orchestrate = \"*/30 * * * *\"");
+        assert!(result.contains("[cadence]"), "got: {result}");
+        assert!(result.contains("orchestrate = \"*/30 * * * *\""), "got: {result}");
+        assert!(result.ends_with('\n'));
+    }
+
+    #[test]
+    fn insert_before_next_section_header() {
+        let content = "project_tag = \"foo\"\n\n[cadence]\norchestrate = \"*/30 * * * *\"\n\n[local]\nprovider = \"ollama\"\n";
+        let result = insert_into_cadence_section(content, "idle = \"*/30 * * * *\"");
+        // idle should appear before [local]
+        let cadence_pos = result.find("[cadence]").unwrap();
+        let idle_pos = result.find("idle = ").unwrap();
+        let local_pos = result.find("[local]").unwrap();
+        assert!(cadence_pos < idle_pos, "idle should be after [cadence]");
+        assert!(idle_pos < local_pos, "idle should be before [local]");
+    }
+
+    #[test]
+    fn insert_result_ends_with_newline() {
+        let content = "project_tag = \"foo\"";
+        let result = insert_into_cadence_section(content, "orchestrate = \"*/30 * * * *\"");
+        assert!(result.ends_with('\n'));
     }
 }

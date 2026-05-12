@@ -707,14 +707,22 @@ fn generate_lines(cfg: &ConductrConfig, log_dir: &str) -> Vec<(String, String)> 
         .collect()
 }
 
-/// `orchestrate` is an alias for `conductr begin` (the cron-friendly entrypoint from #21).
-fn task_command(task: &str, project_tag: &str, repo: Option<&str>) -> String {
+/// Build the command that the installed cron line invokes directly.
+/// `orchestrate` requires `--repo` (reads the slug from `.conductr`) and `--once`
+/// for cron operation; all other skills are invoked as `conductr <skill>` with no
+/// extra args (they read their config from `.conductr`).
+fn task_command(task: &str, _project_tag: &str, repo: Option<&str>) -> String {
     match task {
-        "orchestrate" => match repo {
-            Some(r) => format!("conductr begin --tag {project_tag} --repo {r}"),
-            None => format!("conductr begin --tag {project_tag}"),
-        },
-        other => format!("conductr {other} --tag {project_tag}"),
+        "orchestrate" => {
+            let mut cmd = "conductr orchestrate".to_string();
+            if let Some(r) = repo {
+                cmd.push_str(" --repo ");
+                cmd.push_str(r);
+            }
+            cmd.push_str(" --once");
+            cmd
+        }
+        other => format!("conductr {other}"),
     }
 }
 
@@ -809,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn orchestrate_aliases_to_begin_with_repo() {
+    fn orchestrate_emits_direct_invocation_with_repo_and_once() {
         let lines = generate_lines(
             &cfg("conductr", Some("Luan-vP/conductr"), &[("orchestrate", "0 */2 * * *")]),
             "/tmp/log",
@@ -817,17 +825,29 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let (marker, line) = &lines[0];
         assert_eq!(marker, "# conductr-cron: conductr-orchestrate");
-        assert!(line.contains("conductr begin --tag conductr --repo Luan-vP/conductr"));
+        assert!(line.contains("conductr orchestrate --repo Luan-vP/conductr --once"), "got: {line}");
+        assert!(!line.contains("begin"), "line should not reference 'begin': {line}");
         assert!(line.starts_with("0 */2 * * *"));
         assert!(line.ends_with(">> /tmp/log/orchestrate.log 2>&1"));
     }
 
     #[test]
-    fn unknown_task_falls_back_to_generic_invocation() {
+    fn orchestrate_without_repo_omits_repo_flag() {
         let lines =
-            generate_lines(&cfg("conductr", None, &[("custom", "*/15 * * * *")]), "/tmp/log");
+            generate_lines(&cfg("conductr", None, &[("orchestrate", "*/30 * * * *")]), "/tmp/log");
         let (_, line) = &lines[0];
-        assert!(line.contains("conductr custom --tag conductr"));
+        assert!(line.contains("conductr orchestrate --once"), "got: {line}");
+        assert!(!line.contains("--repo"), "got: {line}");
+    }
+
+    #[test]
+    fn other_skill_emits_plain_invocation() {
+        let lines =
+            generate_lines(&cfg("conductr", None, &[("idle", "*/30 * * * *")]), "/tmp/log");
+        let (_, line) = &lines[0];
+        assert!(line.contains("conductr idle"), "got: {line}");
+        assert!(!line.contains("--tag"), "line should not have --tag: {line}");
+        assert!(!line.contains("begin"), "line should not reference 'begin': {line}");
     }
 
     #[test]
@@ -836,11 +856,11 @@ mod tests {
 # unrelated comment
 0 0 * * * /usr/bin/some-other-job
 # conductr-cron: conductr-orchestrate
-0 */4 * * * conductr begin --tag conductr --repo old/repo >> /tmp/log/orchestrate.log 2>&1
+0 */4 * * * bash -lc 'conductr orchestrate --repo old/repo --once' >> /tmp/log/orchestrate.log 2>&1
 ";
         let new = vec![(
             "# conductr-cron: conductr-orchestrate".to_string(),
-            "0 */2 * * * bash -lc 'conductr begin --tag conductr --repo Luan-vP/conductr' >> /tmp/log/orchestrate.log 2>&1"
+            "0 */2 * * * bash -lc 'conductr orchestrate --repo Luan-vP/conductr --once' >> /tmp/log/orchestrate.log 2>&1"
                 .to_string(),
         )];
         let merged = merge(current, &new, "conductr");
@@ -856,11 +876,11 @@ mod tests {
 # conductr-cron: otherproject-something
 0 1 * * * other-thing
 # conductr-cron: conductr-orchestrate
-0 */4 * * * conductr begin --tag conductr >> /tmp/log/orchestrate.log 2>&1
+0 */4 * * * bash -lc 'conductr orchestrate --once' >> /tmp/log/orchestrate.log 2>&1
 ";
         let new = vec![(
             "# conductr-cron: conductr-orchestrate".to_string(),
-            "0 */2 * * * bash -lc 'conductr begin --tag conductr' >> /tmp/log/orchestrate.log 2>&1"
+            "0 */2 * * * bash -lc 'conductr orchestrate --once' >> /tmp/log/orchestrate.log 2>&1"
                 .to_string(),
         )];
         let merged = merge(current, &new, "conductr");
@@ -874,7 +894,7 @@ mod tests {
     fn merge_into_empty_crontab() {
         let new = vec![(
             "# conductr-cron: conductr-orchestrate".to_string(),
-            "0 */2 * * * bash -lc 'conductr begin' >> /tmp/log/orchestrate.log 2>&1".to_string(),
+            "0 */2 * * * bash -lc 'conductr orchestrate --once' >> /tmp/log/orchestrate.log 2>&1".to_string(),
         )];
         let merged = merge("", &new, "conductr");
         assert!(merged.contains("# conductr-cron: conductr-orchestrate"));
@@ -969,14 +989,14 @@ mod tests {
     fn plist_contains_label_and_command() {
         let plist = generate_plist(
             "com.test.job",
-            "conductr begin --tag test",
+            "conductr orchestrate --repo test/repo --once",
             "0 8 * * *",
             "/tmp/out.log",
             "/tmp/err.log",
         )
         .unwrap();
         assert!(plist.contains("<string>com.test.job</string>"));
-        assert!(plist.contains("<string>conductr begin --tag test</string>"));
+        assert!(plist.contains("<string>conductr orchestrate --repo test/repo --once</string>"));
         assert!(plist.contains("StartCalendarInterval"));
         assert!(plist.contains("<integer>8</integer>")); // Hour
         assert!(plist.contains("<integer>0</integer>")); // Minute
@@ -988,7 +1008,7 @@ mod tests {
     fn plist_uses_start_interval_for_all_wildcards() {
         let plist = generate_plist(
             "com.test.every-minute",
-            "conductr begin --tag test",
+            "conductr idle",
             "* * * * *",
             "/tmp/out.log",
             "/tmp/err.log",
@@ -1034,7 +1054,7 @@ mod tests {
     fn parse_all_extracts_single_entry() {
         let crontab = "\
 # conductr-cron: conductr-orchestrate
-0 */2 * * * bash -lc 'conductr begin' >> /tmp/log 2>&1
+0 */2 * * * bash -lc 'conductr orchestrate --once' >> /tmp/log 2>&1
 ";
         let entries = parse_all_cron_entries(crontab);
         assert_eq!(entries.len(), 1);
@@ -1045,11 +1065,11 @@ mod tests {
     fn parse_all_extracts_multiple_tags_alphabetically() {
         let crontab = "\
 # conductr-cron: meta-model-analyzer-orchestrate
-0 1 * * * bash -lc 'conductr begin --tag meta' >> /tmp/log 2>&1
+0 1 * * * bash -lc 'conductr orchestrate --repo meta/repo --once' >> /tmp/log 2>&1
 # conductr-cron: flipbook-orchestrate
-0 */4 * * * bash -lc 'conductr begin --tag flipbook' >> /tmp/log 2>&1
+0 */4 * * * bash -lc 'conductr orchestrate --repo flipbook/app --once' >> /tmp/log 2>&1
 # conductr-cron: flipbook-idle
-*/30 * * * * bash -lc 'conductr idle --tag flipbook' >> /tmp/log 2>&1
+*/30 * * * * bash -lc 'conductr idle' >> /tmp/log 2>&1
 ";
         let entries = parse_all_cron_entries(crontab);
         assert_eq!(entries.len(), 3);
@@ -1066,7 +1086,7 @@ mod tests {
 # unrelated comment
 0 0 * * * /usr/bin/some-job
 # conductr-cron: conductr-orchestrate
-0 */2 * * * bash -lc 'conductr begin' >> /tmp/log 2>&1
+0 */2 * * * bash -lc 'conductr orchestrate --once' >> /tmp/log 2>&1
 ";
         let entries = parse_all_cron_entries(crontab);
         assert_eq!(entries.len(), 1);
