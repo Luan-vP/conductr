@@ -27,3 +27,6 @@ pub mod llamacpp;
 
 #[cfg(feature = "local-ci")]
 pub mod local_ci;
+
+#[cfg(feature = "gcal")]
+pub mod gcal;

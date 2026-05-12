@@ -380,6 +380,33 @@ pub enum LocalAgentError {
     ModelMissing(String),
 }
 
+// ── Calendar types ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CalendarEvent {
+    pub id: String,
+    pub title: String,
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewCalendarEvent {
+    pub title: String,
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateCalendarEvent {
+    pub title: Option<String>,
+    pub start: Option<DateTime<Utc>>,
+    pub end: Option<DateTime<Utc>>,
+    pub description: Option<String>,
+}
+
 // ── conductr-mail types ───────────────────────────────────────────────────────
 
 /// Opaque identifier for an agent (e.g. "claude/issue-16-…" branch name or session name).
