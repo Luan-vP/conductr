@@ -69,9 +69,9 @@ conductr-conductr-agent1     # first agent session
 The apparent triple repetition (`conductr-conductr-conductr`) is intentional and
 acceptable.
 
-**Implicit init**: on the first `conductr begin` invocation in a working tree
-that has no `.conductr`, the file is created automatically with `project_tag`
-derived from the git remote `origin`:
+**Implicit init**: on the first `conductr begin` invocation (no-arg form) in a
+working tree that has no `.conductr`, the file is created automatically with
+`project_tag` derived from the git remote `origin`:
 
 ```toml
 # .conductr — created automatically by `conductr begin`
@@ -87,16 +87,15 @@ modes.
 The tag is resolved exclusively from the `.conductr` file.  There is no
 `--tag` flag for overriding it and no `CONDUCTR_TAG` environment variable.
 
-**Cron / out-of-tree invocations must `cd` into a working tree** before calling
-`conductr begin`:
+**Cron lines are installed by `conductr cadence sync`**, which reads `project_tag`
+and `repo` from the `.conductr` file in the repo root. Run `conductr begin` once
+to write the cadence defaults and install the entries:
 
-```cron
-# Correct: cd first so .conductr is found
-*/30 * * * *  cd /home/user/projects/my-project && conductr begin --repo owner/my-project
-
-# Wrong: no working tree → .conductr not found → init would fail or use wrong tag
-*/30 * * * *  conductr begin --repo owner/my-project --tag my-project
+```bash
+cd /home/user/projects/my-project && conductr begin
 ```
+
+The resulting cron lines look up `.conductr` via the cwd set in the cron entry:
 
 ---
 
@@ -145,13 +144,6 @@ conductr-foo-agent1    working    215s  implementing issue #17
 conductr-bar-conductr  idle        12s  waiting for first prompt
 ```
 
-### lockfile paths
-
-```
-~/.conductr/begin-foo.lock
-~/.conductr/begin-bar.lock
-```
-
 ### calendar event titles
 
 ```
@@ -161,20 +153,22 @@ conductr-bar-conductr  idle        12s  waiting for first prompt
 
 ### crontab entries
 
-```cron
-# foo — every 30 minutes
-*/30 * * * *  cd ~/projects/foo && conductr begin --repo acme/foo
+Installed by `conductr cadence sync` (run `conductr begin` to generate and sync):
 
-# bar — every 30 minutes, offset by 15
-15,45 * * * *  cd ~/projects/bar && conductr begin --repo acme/bar
+```cron
+# conductr-cron: foo-orchestrate
+*/30 * * * * bash -lc 'conductr orchestrate --repo acme/foo --once' >> ~/.local/share/conductr/orchestrate.log 2>&1
+
+# conductr-cron: bar-orchestrate
+15,45 * * * * bash -lc 'conductr orchestrate --repo acme/bar --once' >> ~/.local/share/conductr/orchestrate.log 2>&1
 ```
 
 ---
 
 ## Implicit `.conductr` init
 
-When `conductr begin` runs in a directory that has no `.conductr`, it creates
-one automatically:
+When `conductr begin` (no-arg form) runs in a directory that has no `.conductr`,
+it creates one automatically:
 
 1. Runs `git remote get-url origin` in the working directory.
 2. Parses the repository name from the URL (handles both HTTPS and SSH forms).
@@ -185,7 +179,7 @@ one automatically:
 **Failure mode — no git remote**:
 
 If `git remote get-url origin` fails (no remote configured), `conductr begin`
-exits with:
+(no-arg form) exits with:
 
 ```
 error: no git remote 'origin' found; cannot derive project tag automatically.
@@ -203,20 +197,17 @@ explicit rule it now follows.
 
 | Location | Previous behaviour | Rule (this doc) |
 |----------|--------------------|-----------------|
-| `conductr begin` — session name | `conductr-<tag>` | `conductr-<tag>-conductr` (agent = `conductr`) |
+| cron entry-point | `conductr begin --tag <tag> --repo <slug>` | `conductr orchestrate --repo <slug> --once` (installed by `cadence sync`) |
 | `conductr diagnose/heal/free` — default filter | `"claude"` substring | `"conductr-"` prefix |
-| lockfile | `~/.conductr/begin-<tag>.lock` | already correct |
 | `.conductr` `project_tag` field | present but not validated | validated to `[a-z0-9-]` on read |
 
-### `conductr begin` — session naming
+### `conductr begin` — new role
 
-**Before:** `conductr-<tag>` (e.g. `conductr-myproject`)
-
-**After:** `conductr-<tag>-conductr` (e.g. `conductr-myproject-conductr`)
-
-The `-conductr` suffix is the agent role.  Existing sessions created under the
-old naming scheme will continue to work until they are next restarted, at which
-point `begin` will create a session with the new name.
+`begin` is now a **cadence configurator**, not a cron entry-point.  It writes
+cadence entries into `.conductr [cadence]` and delegates to `cadence sync` to
+install the actual cron lines. The cron lines invoke `conductr <skill>` directly
+(e.g. `conductr orchestrate --repo <slug> --once`).  Session management is the
+responsibility of each Claude-required command (like `architect` and `idle`).
 
 ### Pod filter default
 
