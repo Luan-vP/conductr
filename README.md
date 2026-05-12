@@ -20,7 +20,7 @@
 
 Scheduling and orchestration for agents and people.
 
-> *"Don't be a dictator, be a conductor."*
+---
 
 A Rust workspace that bundles four concerns into one CLI:
 
