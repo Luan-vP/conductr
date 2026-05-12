@@ -174,6 +174,38 @@ pub fn show(repo_path: &Path, at: Option<chrono::DateTime<Utc>>) -> Result<Strin
     Ok(render_show(&cfg.cadence, now))
 }
 
+/// Render every conductr cron entry from the active crontab as a 24-hour staff.
+/// Rows are labelled `<tag>-<task>` and ordered alphabetically.
+pub fn show_all(at: Option<chrono::DateTime<Utc>>) -> Result<String> {
+    let crontab = read_crontab()?;
+    let entries = parse_all_cron_entries(&crontab);
+    if entries.is_empty() {
+        return Ok("no conductr cron entries found in crontab".to_string());
+    }
+    let now = at.unwrap_or_else(Utc::now);
+    Ok(render_show(&entries, now))
+}
+
+/// Parse all `# conductr-cron: <label>` blocks from a crontab string.
+/// Each block is a marker line followed by the cron command line.
+/// Returns a BTreeMap of label → cron_expression (alphabetically ordered).
+fn parse_all_cron_entries(crontab: &str) -> BTreeMap<String, String> {
+    let mut result = BTreeMap::new();
+    let mut lines = crontab.lines();
+    while let Some(line) = lines.next() {
+        if let Some(label) = line.strip_prefix(MARKER_PREFIX) {
+            let label = label.trim().to_string();
+            if let Some(next) = lines.next() {
+                let fields: Vec<&str> = next.split_whitespace().take(5).collect();
+                if fields.len() == 5 {
+                    result.insert(label, fields.join(" "));
+                }
+            }
+        }
+    }
+    result
+}
+
 /// Pure rendering of the cadence staff (no I/O). Exposed for tests.
 fn render_show(cadence: &BTreeMap<String, String>, now: chrono::DateTime<Utc>) -> String {
     const HOURS_PER_BAR: usize = 4;
@@ -990,6 +1022,63 @@ mod tests {
         assert!(fires[8]);
         let count = fires.iter().filter(|&&f| f).count();
         assert_eq!(count, 1);
+    }
+
+    // ── parse_all_cron_entries ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_all_returns_empty_for_empty_crontab() {
+        assert!(parse_all_cron_entries("").is_empty());
+    }
+
+    #[test]
+    fn parse_all_extracts_single_entry() {
+        let crontab = "\
+# conductr-cron: conductr-orchestrate
+0 */2 * * * bash -lc 'conductr begin' >> /tmp/log 2>&1
+";
+        let entries = parse_all_cron_entries(crontab);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries.get("conductr-orchestrate").map(String::as_str), Some("0 */2 * * *"));
+    }
+
+    #[test]
+    fn parse_all_extracts_multiple_tags_alphabetically() {
+        let crontab = "\
+# conductr-cron: meta-model-analyzer-orchestrate
+0 1 * * * bash -lc 'conductr begin --tag meta' >> /tmp/log 2>&1
+# conductr-cron: flipbook-orchestrate
+0 */4 * * * bash -lc 'conductr begin --tag flipbook' >> /tmp/log 2>&1
+# conductr-cron: flipbook-idle
+*/30 * * * * bash -lc 'conductr idle --tag flipbook' >> /tmp/log 2>&1
+";
+        let entries = parse_all_cron_entries(crontab);
+        assert_eq!(entries.len(), 3);
+        // BTreeMap keys are sorted alphabetically
+        let keys: Vec<&str> = entries.keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["flipbook-idle", "flipbook-orchestrate", "meta-model-analyzer-orchestrate"]);
+        assert_eq!(entries.get("flipbook-orchestrate").map(String::as_str), Some("0 */4 * * *"));
+        assert_eq!(entries.get("flipbook-idle").map(String::as_str), Some("*/30 * * * *"));
+    }
+
+    #[test]
+    fn parse_all_ignores_non_conductr_lines() {
+        let crontab = "\
+# unrelated comment
+0 0 * * * /usr/bin/some-job
+# conductr-cron: conductr-orchestrate
+0 */2 * * * bash -lc 'conductr begin' >> /tmp/log 2>&1
+";
+        let entries = parse_all_cron_entries(crontab);
+        assert_eq!(entries.len(), 1);
+        assert!(entries.contains_key("conductr-orchestrate"));
+    }
+
+    #[test]
+    fn parse_all_skips_marker_with_no_following_line() {
+        let crontab = "# conductr-cron: orphan-task";
+        let entries = parse_all_cron_entries(crontab);
+        assert!(entries.is_empty());
     }
 
     // ── render_show (column-position maths) ──────────────────────────────────
