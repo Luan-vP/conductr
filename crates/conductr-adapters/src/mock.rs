@@ -16,7 +16,7 @@ use conductr_core::ports::{
 };
 use conductr_core::types::{
     CalendarEvent, CiStatus, InstanceHandle, InstanceSpec, Issue, IssueNumber, IssueState,
-    MailKind, MailMessage, MailRef, NewCalendarEvent, Pr, PrNumber, PrState, Provider, RepoSlug,
+    MailKind, MailMessage, MailRef, NewCalendarEvent, Pr, PrNumber, PrState, RepoSlug,
     Task, TaskStatus, TmuxSession, UpdateCalendarEvent,
 };
 

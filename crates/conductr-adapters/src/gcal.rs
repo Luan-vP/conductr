@@ -168,15 +168,16 @@ impl CalendarPort for GcalAdapter {
             .await
             .map_err(|e| CalendarError::Http(e.to_string()))?;
 
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
             return Err(CalendarError::NotFound(id.to_string()));
         }
-        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(CalendarError::Auth);
         }
-        if !resp.status().is_success() {
+        if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(CalendarError::Api(format!("{}: {text}", resp.status())));
+            return Err(CalendarError::Api(format!("{status}: {text}")));
         }
 
         let mut current: GcalEventItem =
