@@ -845,5 +845,5 @@ render, time, and (eventually) reason about as a piece of music.
 
 **Out of scope:**
 - Synchronising the plan with real wall-clock time. The pattern is a
-  *score*, not a Gantt — `quarter_duration` is the user's choice.
+  *score*, not a Gantt — `bar_duration` is the user's choice.
 - Bidirectional sync (pattern → plan). One-way is enough for now.

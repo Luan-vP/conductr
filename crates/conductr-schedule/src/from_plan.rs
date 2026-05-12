@@ -241,17 +241,18 @@ fn topo_batches(plan: &Plan) -> Vec<Vec<&PlanItem>> {
 pub fn pattern_to_dsl(pattern: &Pattern) -> String {
     use std::fmt::Write;
     let mut out = String::new();
-    let ts = pattern.time_signature;
-    let _ = writeln!(out, "time_signature {}/{}", ts.beats_per_bar, ts.beat_unit.denominator());
-    let secs = pattern.tempo.quarter().as_secs();
-    let h = secs / 3600;
-    let m = (secs % 3600) / 60;
+    // bar_duration = quarter_seconds × bar_in_64ths / Quarter.in_64ths()
+    let bar_in_64ths = pattern.time_signature.bar_in_64ths() as u64;
+    let q64 = NoteValue::Quarter.in_64ths() as u64;
+    let bar_secs = pattern.tempo.quarter().as_secs() * bar_in_64ths / q64;
+    let h = bar_secs / 3600;
+    let m = (bar_secs % 3600) / 60;
     if m == 0 {
-        let _ = writeln!(out, "quarter_duration {}h", h);
+        let _ = writeln!(out, "bar_duration {}h", h);
     } else if h == 0 {
-        let _ = writeln!(out, "quarter_duration {}m", m);
+        let _ = writeln!(out, "bar_duration {}m", m);
     } else {
-        let _ = writeln!(out, "quarter_duration {}h{}m", h, m);
+        let _ = writeln!(out, "bar_duration {}h{}m", h, m);
     }
     out.push('\n');
     for bar in &pattern.bars {

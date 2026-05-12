@@ -55,7 +55,7 @@ mod tests {
     #[test]
     fn render_does_not_panic() {
         let p = parse(
-            "time_signature 6/4\nquarter_duration 4h\n| sleep:q | sleep:q | sleep:q | wake:q | work:q | rest:q |",
+            "bar_duration 4h\n| sleep:w |\n| sleep:w |\n| sleep:w |\n| wake:w |\n| work:w |\n| rest:w |",
         )
         .unwrap();
         let s = render_ascii(&p);

@@ -166,8 +166,7 @@ pub fn status(repo_path: &Path) -> Result<String> {
 /// Render the cadence schedule as a 24-hour staff with a `↓ HH:MM UTC` marker
 /// at the column for the current (or `--at`) UTC time.
 ///
-/// Resolution: 1 column = 1 sixteenth note = 1 h (at q = 4 h, 6/4).
-/// Bars: 6 bar sections of 4 h each (one quarter-note beat per visual bar).
+/// Resolution: 1 column = 1 h.  Bar sections: 6 × 4 h = 24 h.
 pub fn show(repo_path: &Path, at: Option<chrono::DateTime<Utc>>) -> Result<String> {
     let cfg = read_config(repo_path)?;
     let now = at.unwrap_or_else(Utc::now);
@@ -208,8 +207,8 @@ fn parse_all_cron_entries(crontab: &str) -> BTreeMap<String, String> {
 
 /// Pure rendering of the cadence staff (no I/O). Exposed for tests.
 fn render_show(cadence: &BTreeMap<String, String>, now: chrono::DateTime<Utc>) -> String {
-    const HOURS_PER_BAR: usize = 4;
-    const NUM_BARS: usize = 6; // 6/4 time
+    const HOURS_PER_BAR: usize = 4; // bar_duration 4h
+    const NUM_BARS: usize = 6; // 6 bars per day
     const CELL_WIDTH: usize = 3; // chars per hour column
 
     let tasks: Vec<(&str, Vec<bool>)> = cadence

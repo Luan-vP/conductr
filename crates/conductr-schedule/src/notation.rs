@@ -82,11 +82,11 @@ impl TimeSignature {
     }
 }
 
-/// Tempo expressed by anchoring the duration of one quarter note.
+/// Tempo anchored to the wall-clock duration of one bar.
 ///
-/// For the conductor life scheduler the canonical mapping is
-/// `Tempo::from_quarter(Duration::from_secs(4 * 3600))` — one quarter = 4 h,
-/// so a 6/4 bar = 24 h and one 32nd-note ≈ 30 min.
+/// Internally stored as `quarter_seconds` (duration of a quarter note).
+/// Use [`from_bar_secs`](Tempo::from_bar_secs) when constructing from a
+/// `bar_duration` directive: a bar = one whole note, so a quarter = bar/4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tempo {
     /// Duration of a quarter note in seconds.
@@ -94,8 +94,19 @@ pub struct Tempo {
 }
 
 impl Tempo {
+    /// Construct from the duration of a single quarter note.
     pub fn from_quarter(d: Duration) -> Self {
         Self { quarter_seconds: d.as_secs() }
+    }
+
+    /// Construct from a bar's wall-clock duration and its length in 64th notes.
+    ///
+    /// `bar_in_64ths` is the sum of all beat 64ths in one bar.  For a
+    /// whole-note bar (`bar_duration 4h`), `bar_in_64ths = 64` and each
+    /// eighth note resolves to 30 min.
+    pub fn from_bar_secs(bar_secs: u64, bar_in_64ths: u32) -> Self {
+        let q64 = NoteValue::Quarter.in_64ths() as u64;
+        Self { quarter_seconds: bar_secs * q64 / bar_in_64ths as u64 }
     }
 
     pub fn quarter(self) -> Duration {
@@ -132,12 +143,12 @@ mod tests {
 
     #[test]
     fn conductor_life_scheduler_mapping() {
-        // 1 quarter = 4 hours; full 6/4 bar = 24 h; 1 demisemiquaver = 30 min.
-        let tempo = Tempo::from_quarter(Duration::from_secs(4 * 3600));
-        assert_eq!(tempo.note_duration(NoteValue::Quarter), Duration::from_secs(4 * 3600));
-        assert_eq!(tempo.note_duration(NoteValue::ThirtySecond), Duration::from_secs(30 * 60));
-        let bar_seconds: u64 = (0..6).map(|_| tempo.note_duration(NoteValue::Quarter).as_secs()).sum();
-        assert_eq!(bar_seconds, 24 * 3600);
+        // bar_duration 4h; whole note = 1 bar = 4h; eighth note = 30 min.
+        let tempo = Tempo::from_bar_secs(4 * 3600, NoteValue::Whole.in_64ths());
+        assert_eq!(tempo.note_duration(NoteValue::Whole), Duration::from_secs(4 * 3600));
+        assert_eq!(tempo.note_duration(NoteValue::Eighth), Duration::from_secs(30 * 60));
+        // 6 bars × 4 h = 24 h day.
+        assert_eq!(6 * 4 * 3600u64, 24 * 3600);
     }
 
     #[test]
