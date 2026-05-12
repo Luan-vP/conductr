@@ -1,7 +1,7 @@
 ---
 name: architect
 description: Architecture oversight agent for multi-issue feature work. Analyzes a set of issues, maps dependencies, generates Architecture Reference Notes (ARNs) for each issue, and reviews PRs for architectural coherence. Use proactively before orchestrating batches of related issues.
-cli: conductr architect review [<target>]
+cli: conductr architect review [<target>] | conductr architect plan <issues>
 tools: Read, Grep, Glob, Bash, WebFetch, Task
 model: opus
 ---
@@ -18,12 +18,16 @@ This skill is invoked in two equivalent ways:
 |------|---------|
 | Claude slash command | `/architect review [<target>]` |
 | CLI (spawns this session) | `conductr architect review [<target>]` |
+| Claude slash command | `/architect plan <issues>` |
+| CLI (spawns this session) | `conductr architect plan <issues>` |
 
-The CLI form opens or reuses the `conductr-architect` tmux session, starts Claude if needed, and sends the slash-command form above. Both forms must remain in sync (parity rule): any change to what `/architect review` accepts is a change to what `conductr architect review` accepts.
+The CLI form opens or reuses the `conductr-architect` tmux session, starts Claude if needed, and sends the slash-command form above. Both forms must remain in sync (parity rule): any change to what `/architect review` or `/architect plan` accepts is a change to what the corresponding CLI subcommand accepts.
 
-`<target>` is optional:
+`<target>` is optional for `review`:
 - Omitted → workspace-wide architectural audit (all hexagonal rules, `check_cli_skill_parity`).
 - PR number (`123`) or issue number (`#123`) → targeted review of that PR or issue.
+
+`<issues>` for `plan` is a space-separated list of issue numbers (e.g. `42 43 44` or `#42 #43 #44`). At least one issue is required.
 
 ## Core Responsibilities
 
@@ -118,7 +122,19 @@ Structured guidance for the implementing agent:
 
 ## Workflow
 
-### When invoked for a batch of issues:
+### When invoked with `plan <issues>`:
+
+1. **Read all issue bodies** with `gh issue view <number> --json body,title,labels` for each issue.
+2. **Parse dependencies** from each issue body (same patterns as `deps.rs`: `depends on #N`, `blocked by #N`, `after #N`, `requires #N`, checklist `- [ ] #N must be done first`).
+3. **Cluster issues** by dependency reachability: issues that are connected (directly or transitively) form one cluster.
+4. **Name each phrase** from the highest-level issue in the cluster (the sink: no other cluster member depends on it). Slugify by taking the segment before the first colon, lowercasing, and replacing non-alphanumeric runs with hyphens. Example: `"begin: cron-friendly entry point"` → `begin`.
+5. **Estimate complexity** for each issue using architect judgment: `XS` (trivial, < 30 min), `S` (small, < 2 h), `M` (medium, < 1 day), `L` (large, multi-day). Write the estimate into the ARN `**Complexity:**` field.
+6. **Write ARNs** on each issue (same format as the review workflow below), including the `**Complexity:**` line after the Local Map.
+7. **Print a summary** of phrases and complexity assignments.
+
+No `--phrase` override flag exists. Phrase scoping is strictly inferred.
+
+### When invoked for a batch of issues (legacy `review` workflow):
 
 1. **Read all issue bodies** with `gh issue view <number> --json body,title` for each issue
 2. **Explore the codebase** to understand current architecture — read key files, understand patterns, map the module structure

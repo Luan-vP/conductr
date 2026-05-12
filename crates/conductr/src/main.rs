@@ -1397,6 +1397,11 @@ enum ArchitectCmd {
     /// Finds or spawns a QA pane (`conductr-<tag>-qa<n>`), starts Claude if needed,
     /// then sends `/architect diagram [--repo-path <path>] [--output <file>] [--tier dependency]`.
     Diagram(ArchitectDiagramArgs),
+    /// Plan a batch of issues: infer phrases, estimate complexity, write ARNs.
+    ///
+    /// Opens or reuses the `conductr-architect` tmux session, starts Claude if
+    /// needed, then sends `/architect plan <issues>`.
+    Plan(ArchitectPlanArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -1429,6 +1434,20 @@ struct ArchitectReviewArgs {
     /// PR number (`123`) or issue number (`#123`) to review.
     /// Omit for a workspace-wide architectural audit.
     target: Option<String>,
+    /// Working directory for the tmux session (defaults to current directory).
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    /// Print the plan without creating sessions, starting Claude, or sending keys.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Parser)]
+struct ArchitectPlanArgs {
+    /// Space-separated issue numbers (e.g. `42 43 44` or `#42 #43 #44`).
+    /// At least one issue is required.
+    #[arg(required = true)]
+    issues: Vec<String>,
     /// Working directory for the tmux session (defaults to current directory).
     #[arg(long)]
     cwd: Option<PathBuf>,
@@ -1706,6 +1725,7 @@ async fn run_architect(args: ArchitectArgs) -> Result<()> {
     match args.cmd {
         ArchitectCmd::Review(a) => run_architect_review(a).await,
         ArchitectCmd::Diagram(a) => run_architect_diagram(a).await,
+        ArchitectCmd::Plan(a) => run_architect_plan(a).await,
     }
 }
 
@@ -1850,6 +1870,65 @@ async fn run_architect_diagram(args: ArchitectDiagramArgs) -> Result<()> {
     tmux.send_line(&session, &skill_cmd)
         .await
         .context("sending diagram skill command to QA pane")?;
+
+    Ok(())
+}
+
+// ── architect plan ────────────────────────────────────────────────────────────
+
+async fn run_architect_plan(args: ArchitectPlanArgs) -> Result<()> {
+    let session = "conductr-architect";
+    let cwd = args
+        .cwd
+        .map(|p| p.to_string_lossy().into_owned())
+        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| ".".to_string());
+
+    let skill_cmd = build_architect_plan_prompt(&args.issues);
+    let claude_cmd = "claude --dangerously-skip-permissions";
+
+    if args.dry_run {
+        let tmux = Tmux::new();
+        return run_architect_plan_dry(&tmux, session, &cwd, claude_cmd, &skill_cmd).await;
+    }
+
+    let tmux = Tmux::new();
+    let state = ensure_session(&tmux, session, &cwd)
+        .await
+        .with_context(|| format!("ensuring tmux session '{session}'"))?;
+
+    match &state {
+        SessionState::Existing(Health::Working { activity }) => {
+            println!("architect: session '{session}' is busy ({activity}); skipping");
+            return Ok(());
+        }
+        SessionState::Existing(Health::Unknown { reason }) => {
+            println!("architect: session '{session}' is unclassified ({reason}); skipping");
+            return Ok(());
+        }
+        SessionState::Existing(Health::Crashed { .. }) => {
+            println!("architect: session '{session}' crashed — restarting Claude");
+            tmux.send_line(session, claude_cmd)
+                .await
+                .context("restarting Claude after crash")?;
+            wait_for_idle(&tmux, session).await?;
+        }
+        SessionState::Created => {
+            println!("architect: created session '{session}' — starting Claude");
+            tmux.send_line(session, claude_cmd)
+                .await
+                .context("starting Claude in new session")?;
+            wait_for_idle(&tmux, session).await?;
+        }
+        SessionState::Existing(Health::Idle { .. }) => {
+            println!("architect: session '{session}' is idle — sending plan prompt");
+        }
+    }
+
+    println!("architect: sending: {skill_cmd}");
+    tmux.send_line(session, &skill_cmd)
+        .await
+        .context("sending architect plan prompt")?;
 
     Ok(())
 }
@@ -2190,6 +2269,62 @@ async fn run_idle(args: IdleArgs) -> Result<()> {
 
     let scm = GhCli;
     idle::run(&scm, agent.as_deref(), &cfg).await
+}
+
+fn build_architect_plan_prompt(issues: &[String]) -> String {
+    format!("/architect plan {}", issues.join(" "))
+}
+
+async fn run_architect_plan_dry(
+    tmux: &Tmux,
+    session: &str,
+    cwd: &str,
+    claude_cmd: &str,
+    skill_cmd: &str,
+) -> Result<()> {
+    let sessions = match tmux.list_sessions().await {
+        Ok(s) => s,
+        Err(TmuxError::NoServer) | Err(TmuxError::NotInstalled) => {
+            println!("plan: tmux not running");
+            println!("plan: → would create session '{session}' at cwd={cwd}");
+            println!("plan: → would start Claude: `{claude_cmd}`");
+            println!("plan: → would send: `{skill_cmd}`");
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+
+    if sessions.iter().any(|s| s.name == session) {
+        match diagnose_one(tmux, session).await {
+            Ok(d) => {
+                println!("plan: session '{session}' exists ({})", health_label(&d.health));
+                match &d.health {
+                    Health::Working { activity } => {
+                        println!("plan: → would skip (busy: {activity})");
+                    }
+                    Health::Unknown { reason } => {
+                        println!("plan: → would skip (unclassified: {reason})");
+                    }
+                    Health::Crashed { .. } => {
+                        println!("plan: → would restart Claude: `{claude_cmd}`");
+                        println!("plan: → would send: `{skill_cmd}`");
+                    }
+                    Health::Idle { .. } => {
+                        println!("plan: → would send: `{skill_cmd}`");
+                    }
+                }
+            }
+            Err(e) => println!("plan: session '{session}' exists but diagnose failed: {e}"),
+        }
+    } else {
+        println!("plan: session '{session}' does not exist");
+        println!("plan: cwd = {cwd}");
+        println!("plan: → would create session '{session}'");
+        println!("plan: → would start Claude: `{claude_cmd}`");
+        println!("plan: → would send: `{skill_cmd}`");
+    }
+    Ok(())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
