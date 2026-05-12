@@ -1,13 +1,13 @@
 ---
-name: conductr-pod
+name: pod
 description: Diagnose, heal, and save-state across the local Claude Code pod (other tmux sessions on this host). Use when the user asks to check / restart / snapshot other Claude threads, e.g. "are the other threads ok", "restart everything to pick up new skills", "save state across the pod before I reboot".
 ---
 
-# conductr-pod
+# pod
 
 This skill drives the `conductr` CLI to manage the *local* Claude Code pod —
 every tmux session on this host with a `claude` agent in it. It is the
-in-Claude counterpart to `conductr diagnose|heal|save-state` and adds the
+in-Claude counterpart to `conductr pod diagnose|heal|save-state` and adds the
 external-system updates (Notion etc.) that the binary deliberately omits.
 
 ## When to invoke
@@ -25,9 +25,9 @@ only handles the local-tmux pod.
 - `conductr` on `$PATH` (`cargo install --path crates/conductr` from the repo).
 - `tmux` running with the user's pod sessions. Pod sessions are matched by
   name substring; default is `claude`.
-- For `save-state --tracker beads` (default): `br` (beads) installed and a
+- For `conductr pod save-state --tracker beads` (default): `br` (beads) installed and a
   beads database initialised in `~/.beads` or the current directory.
-- For `save-state --tracker notion`: `NOTION_API_KEY` set and
+- For `conductr pod save-state --tracker notion`: `NOTION_API_KEY` set and
   `--notion-database <id>` supplied (or `CONDUCTR_NOTION_DATABASE` env var).
 
 If any of these are missing, *say so to the user and stop* — do not silently
@@ -38,8 +38,8 @@ fall back to ad-hoc tmux scripting.
 ### diagnose
 
 ```
-conductr diagnose            # human-readable table
-conductr diagnose --json     # machine-readable
+conductr pod diagnose            # human-readable table
+conductr pod diagnose --json     # machine-readable
 ```
 
 Run it, then summarise in a short table or bullet list. The `idle_seconds`
@@ -50,9 +50,9 @@ typed or rendered. Don't over-interpret it.
 ### heal
 
 ```
-conductr heal                # restart anything classified `crashed`
-conductr heal --dry-run      # preview without sending keys
-conductr heal --command 'claude --continue'   # custom relaunch command
+conductr pod heal                # restart anything classified `crashed`
+conductr pod heal --dry-run      # preview without sending keys
+conductr pod heal --command 'claude --continue'   # custom relaunch command
 ```
 
 `heal` only acts on `crashed` sessions. Idle / working sessions are left
@@ -62,11 +62,11 @@ a new skill), use `save-state` instead.
 ### save-state
 
 ```
-conductr save-state                                        # capture work, write beads issues, restart
-conductr save-state --tracker beads                       # explicit beads (default)
-conductr save-state --tracker notion --notion-database <id>  # write to Notion database
-conductr save-state --dry-run                             # plan only, no writes, no restarts
-conductr save-state --no-restart                          # capture only, leave panes running
+conductr pod save-state                                        # capture work, write beads issues, restart
+conductr pod save-state --tracker beads                       # explicit beads (default)
+conductr pod save-state --tracker notion --notion-database <id>  # write to Notion database
+conductr pod save-state --dry-run                             # plan only, no writes, no restarts
+conductr pod save-state --no-restart                          # capture only, leave panes running
 ```
 
 `--tracker notion` also accepts the database ID via `CONDUCTR_NOTION_DATABASE` (env var).
@@ -94,7 +94,7 @@ The binary wrote the recovery issue to beads. If the user has Notion tickets
 that mirror their beads work, *you* update those tickets — the binary didn't
 do it. The contract is:
 
-1. Run `conductr save-state --json` (or `--dry-run` first if the user wants a
+1. Run `conductr pod save-state --json` (or `--dry-run` first if the user wants a
    preview).
 2. Parse the manifest.
 3. For each entry where `tracker_id` is non-null and `tracker == "beads"`:
@@ -113,9 +113,19 @@ do it. The contract is:
 The binary already wrote the recovery issue directly into Notion. You do **not**
 need to mirror anything. Just report the results from the manifest.
 
-1. Run `conductr save-state --tracker notion --notion-database <id> --json`.
+1. Run `conductr pod save-state --tracker notion --notion-database <id> --json`.
 2. Parse the manifest.
 3. Report a final table: session → tracker id → restart action.
+
+### free
+
+```
+conductr pod free                  # print tmux attach command for an idle session
+conductr pod free --json           # machine-readable
+conductr pod free --include-attached  # also consider attached sessions
+```
+
+Exits non-zero if no idle session is found.
 
 ### Restart semantics
 
@@ -131,10 +141,10 @@ need to mirror anything. Just report the results from the manifest.
 
 - **Don't** `tmux kill-session` to "restart" a thread. You lose the cwd, the
   scrollback that contains the user's last message, and any untracked shell
-  state. Use `save-state` (which sends `/exit`) or `heal`.
+  state. Use `conductr pod save-state` (which sends `/exit`) or `conductr pod heal`.
 - **Don't** fabricate Notion updates. If you don't have Notion tools wired up
   in this session, say so.
-- **Don't** run `save-state` on `--all` (every tmux session) without
+- **Don't** run `conductr pod save-state` on `--all` (every tmux session) without
   confirming. Non-claude sessions probably shouldn't be sent `/exit`.
 - **Don't** parse the human-readable output. Always pass `--json` when you
   intend to act on the result.

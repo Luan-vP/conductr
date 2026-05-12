@@ -1,4 +1,4 @@
-//! `conductr` CLI: orchestrate, instance, schedule, tasks, setup, mail, local, cadence.
+//! `conductr` CLI: orchestrate, instance, schedule, tasks, setup, mail, local, cadence, pod.
 
 mod cadence;
 mod config;
@@ -83,14 +83,8 @@ enum Cmd {
     Schedule(ScheduleArgs),
     /// Task tracking via beads (`br`) and Notion.
     Tasks(TasksArgs),
-    /// Inspect the local Claude Code pod (tmux sessions on this host).
-    Diagnose(DiagnoseArgs),
-    /// Find an idle Claude Code session and print its tmux attach command.
-    Free(FreeArgs),
-    /// Restart any crashed Claude Code sessions in the pod.
-    Heal(HealArgs),
-    /// Snapshot unfinished work to beads then restart pod sessions.
-    SaveState(SaveStateArgs),
+    /// Manage the local Claude Code pod (tmux sessions on this host).
+    Pod(PodArgs),
     /// Check and improve repository maturity (setup wizard).
     Setup(SetupArgs),
     /// Agent mail: scope-dedup and synthesis bulletin board.
@@ -283,6 +277,33 @@ struct TasksArgs {
 }
 
 #[derive(Debug, Parser)]
+struct PodArgs {
+    #[command(subcommand)]
+    cmd: PodCmd,
+}
+
+#[derive(Debug, Subcommand)]
+enum PodCmd {
+    /// Inspect the local Claude Code pod (tmux sessions on this host).
+    Diagnose(DiagnoseArgs),
+    /// Find an idle Claude Code session and print its tmux attach command.
+    Free(FreeArgs),
+    /// Restart any crashed Claude Code sessions in the pod.
+    Heal(HealArgs),
+    /// Snapshot unfinished work to beads then restart pod sessions.
+    SaveState(SaveStateArgs),
+}
+
+async fn run_pod(args: PodArgs) -> Result<()> {
+    match args.cmd {
+        PodCmd::Diagnose(a) => run_diagnose(a).await,
+        PodCmd::Free(a) => run_free(a).await,
+        PodCmd::Heal(a) => run_heal(a).await,
+        PodCmd::SaveState(a) => run_save_state(a).await,
+    }
+}
+
+#[derive(Debug, Parser)]
 struct DiagnoseArgs {
     /// Substring to filter session names by (default: `claude`).
     /// Pass `--all` to inspect every tmux session.
@@ -399,10 +420,7 @@ async fn main() -> Result<()> {
         Cmd::Instance(a) => run_instance(a).await,
         Cmd::Schedule(a) => run_schedule(a),
         Cmd::Tasks(a) => run_tasks(a).await,
-        Cmd::Diagnose(a) => run_diagnose(a).await,
-        Cmd::Free(a) => run_free(a).await,
-        Cmd::Heal(a) => run_heal(a).await,
-        Cmd::SaveState(a) => run_save_state(a).await,
+        Cmd::Pod(a) => run_pod(a).await,
         Cmd::Setup(a) => run_setup(a).await,
         Cmd::Mail(a) => run_mail(a).await,
         Cmd::Local(a) => run_local(a).await,
@@ -855,7 +873,7 @@ async fn create_recovery_issue(
         truncate(summary, 80),
     );
     let body = format!(
-        "Captured by `conductr save-state` at {now}.\n\n\
+        "Captured by `conductr pod save-state` at {now}.\n\n\
          - session: `{name}`\n\
          - health: `{health}`\n\
          - cwd: `{cwd}`\n\

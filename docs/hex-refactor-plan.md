@@ -4,8 +4,8 @@
 
 `conductr` already has two surfaces driving the same flows:
 
-- The CLI binary (`conductr diagnose`, `conductr save-state`, …).
-- The Claude skills (`skills/conductr-pod/SKILL.md`, future skill ports of
+- The CLI binary (`conductr pod diagnose`, `conductr pod save-state`, …).
+- The Claude skills (`skills/pod/SKILL.md`, future skill ports of
   `tasks` and `orchestrate`).
 
 And the use cases share connectors that don't yet share an interface:
@@ -523,7 +523,7 @@ able to write recovery issues to either beads or Notion.
     helpers such as `fn issue_tracker(kind: TrackerKind) -> Box<dyn
     IssueTracker>`. Defaults: `beads`. Alternatives: `notion`. The
     helper handles `Notion::from_env()` failure cleanly.
-  - Add a `--tracker beads|notion` flag to `conductr save-state`.
+  - Add a `--tracker beads|notion` flag to `conductr pod save-state`.
     Default `beads`. When `notion`, use the wiring helper. The Notion
     adapter must be passed the database id via a new `--notion-database
     <id>` flag (or `CONDUCTR_NOTION_DATABASE` env var).
@@ -532,16 +532,16 @@ able to write recovery issues to either beads or Notion.
     skill-side code can route correctly.
 
 **Updates to skill:**
-- `skills/conductr-pod/SKILL.md`: mention the new `--tracker` flag and
+- `skills/pod/SKILL.md`: mention the new `--tracker` flag and
   the renamed manifest fields. The "Notion update" section is now an
   *alternative* path — when `--tracker notion` is used, the skill
   doesn't need to mirror, the binary already wrote it. When `--tracker
   beads` (default), the skill mirrors as before.
 
 **Acceptance:**
-- `conductr save-state --tracker beads` behaves exactly as today (modulo
+- `conductr pod save-state --tracker beads` behaves exactly as today (modulo
   field renames documented in the skill).
-- `conductr save-state --tracker notion --notion-database <id>` writes
+- `conductr pod save-state --tracker notion --notion-database <id>` writes
   recovery issues into the named Notion database. Smoke-test against a
   personal database if available; otherwise document the env-var setup
   and ship.
