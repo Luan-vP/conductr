@@ -35,19 +35,17 @@ last_run    = "..."   # ISO-8601 timestamp
 `style` and `reference` drive the architecture scan in phase 2. `[idle]` is
 state — idle reads and rewrites this block on every non-dry-run pass.
 
-### 2. Architecture scan
+### 2. Architecture scan (deterministic)
 
-**Deterministic pass.** For the declared `style`, run the cargo-dependency
-rule checks against the workspace. For `hexagonal`, that's rules 1, 3, and 4
-from `.claude/base.md`:
+For the declared `style`, run the corresponding rule checks against the
+workspace. For `hexagonal`, that's the six rules in `.claude/base.md`; v1
+mechanically checks three of them:
 
 | Rule | Check | Source |
 |------|-------|--------|
 | 1 | Use-case crates must not depend on `conductr-adapters` or any connector crate. | Walk each crate's `[dependencies]` table. |
 | 3 | Adapters must not depend on use-case crates. | Same. |
 | 4 | `conductr-core` has no I/O dependencies (`tokio`, `reqwest`, `hyper`, etc.). | Denylist check against core's `[dependencies]`. |
-
-Each violation becomes a `Finding` with severity `Architecture`.
 
 **LLM-powered audit (delegated).** Rules 2, 5, and 6 — which require
 source-level analysis (`use` paths, mock locations, port-trait counts) — and
