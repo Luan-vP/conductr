@@ -293,6 +293,15 @@ pub fn parse_clippy_output(output: &str, crate_name: &str) -> Vec<Finding> {
     findings
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+pub(crate) fn severity_label(s: &FindingSeverity) -> &'static str {
+    match s {
+        FindingSeverity::Architecture => "architecture",
+        FindingSeverity::Quality => "quality",
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
