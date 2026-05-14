@@ -1,7 +1,8 @@
-//! `conductr` CLI: orchestrate, instance, schedule, tasks, setup, mail, local, cadence, pod, architect, sync.
+//! `conductr` CLI: orchestrate, instance, schedule, tasks, setup, mail, local, cadence, pod, architect, sync, idle.
 
 mod cadence;
 mod config;
+mod idle;
 mod local_detect;
 mod wiring;
 
@@ -101,6 +102,8 @@ enum Cmd {
     Architect(ArchitectArgs),
     /// Sync Google Calendar with the current issue state (decision + test slots).
     Sync(SyncArgs),
+    /// Self-directed scan: architecture check + module clippy/LLM scan → file issues.
+    Idle(IdleArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -429,6 +432,7 @@ async fn main() -> Result<()> {
         Cmd::RunTask(a) => run_run_task(a).await,
         Cmd::Architect(a) => run_architect(a).await,
         Cmd::Sync(a) => run_sync(a).await,
+        Cmd::Idle(a) => run_idle(a).await,
     }
 }
 
@@ -2124,6 +2128,68 @@ fn resolve_sync_repo(explicit: Option<&str>, repo_root: &std::path::Path) -> Res
     anyhow::bail!(
         "no repo specified. Pass --repo owner/repo or set `repo` in .conductr"
     )
+}
+
+// ── Idle ──────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Parser)]
+struct IdleArgs {
+    /// Path to the repo root containing `.conductr` (defaults to current directory).
+    #[arg(long)]
+    repo_path: Option<PathBuf>,
+    /// Print findings without filing issues or advancing state.
+    #[arg(long)]
+    dry_run: bool,
+    /// Maximum number of issues to file per pass (default 5).
+    #[arg(long, default_value_t = 5)]
+    max_issues: usize,
+    /// Skip the LLM scan; deterministic checks only.
+    #[arg(long)]
+    no_llm: bool,
+}
+
+async fn run_idle(args: IdleArgs) -> Result<()> {
+    let repo_path = args
+        .repo_path
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    // Read repo slug from .conductr, fall back to env var CONDUCTR_REPO
+    let repo_str = config::read_project_repo(&repo_path)?
+        .or_else(|| std::env::var("CONDUCTR_REPO").ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "repo not found in .conductr and CONDUCTR_REPO not set. \
+                 Add `repo = \"owner/repo\"` to .conductr."
+            )
+        })?;
+    let (owner, repo) = repo_str.split_once('/').with_context(|| {
+        format!("invalid repo slug '{repo_str}': expected 'owner/repo'")
+    })?;
+    let repo_slug = conductr_core::types::RepoSlug::new(owner, repo);
+
+    // Wire up optional local agent
+    let agent: Option<Box<dyn conductr_core::ports::LocalAgent>> = if args.no_llm {
+        None
+    } else {
+        match resolve_provider(None).await {
+            Ok((kind, model)) => Some(wiring::local_agent(kind, model)),
+            Err(e) => {
+                eprintln!("idle: no local agent available ({e}); skipping LLM scan");
+                None
+            }
+        }
+    };
+
+    let cfg = idle::IdleRunConfig {
+        repo_path,
+        repo_slug,
+        dry_run: args.dry_run,
+        max_issues: args.max_issues,
+        no_llm: args.no_llm,
+    };
+
+    let scm = GhCli;
+    idle::run(&scm, agent.as_deref(), &cfg).await
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -76,6 +76,13 @@ pub trait ScmHost: Send + Sync {
         login: &str,
     ) -> anyhow::Result<()>;
     async fn merge_pr_squash(&self, repo: &RepoSlug, n: PrNumber) -> anyhow::Result<()>;
+    async fn create_issue(
+        &self,
+        repo: &RepoSlug,
+        title: &str,
+        body: &str,
+        labels: &[&str],
+    ) -> anyhow::Result<IssueNumber>;
 }
 
 // ── TmuxAgent ─────────────────────────────────────────────────────────────────

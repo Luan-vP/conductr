@@ -722,6 +722,8 @@ fn task_command(task: &str, _project_tag: &str, repo: Option<&str>) -> String {
             cmd.push_str(" --once");
             cmd
         }
+        // `idle` drives self-directed scan; reads repo from .conductr, no --tag needed.
+        "idle" => "conductr idle".to_string(),
         other => format!("conductr {other}"),
     }
 }

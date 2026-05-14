@@ -232,6 +232,8 @@ pub struct MockScmHost {
     posted_comments: Arc<RwLock<Vec<(IssueNumber, String)>>>,
     assignments: Arc<RwLock<Vec<(IssueNumber, String)>>>,
     merged_prs: Arc<RwLock<Vec<PrNumber>>>,
+    created_issues: Arc<RwLock<Vec<(String, String, Vec<String>)>>>,
+    issue_counter: Arc<AtomicU64>,
 }
 
 impl MockScmHost {
@@ -267,6 +269,11 @@ impl MockScmHost {
     /// PRs merged via `merge_pr_squash`.
     pub fn merged_prs(&self) -> Vec<PrNumber> {
         self.merged_prs.read().unwrap().clone()
+    }
+
+    /// Issues created via `create_issue`: `(title, body, labels)`.
+    pub fn created_issues(&self) -> Vec<(String, String, Vec<String>)> {
+        self.created_issues.read().unwrap().clone()
     }
 }
 
@@ -338,6 +345,22 @@ impl ScmHost for MockScmHost {
     async fn merge_pr_squash(&self, _repo: &RepoSlug, n: PrNumber) -> anyhow::Result<()> {
         self.merged_prs.write().unwrap().push(n);
         Ok(())
+    }
+
+    async fn create_issue(
+        &self,
+        _repo: &RepoSlug,
+        title: &str,
+        body: &str,
+        labels: &[&str],
+    ) -> anyhow::Result<IssueNumber> {
+        let number = self.issue_counter.fetch_add(1, Ordering::SeqCst) + 1;
+        self.created_issues.write().unwrap().push((
+            title.to_string(),
+            body.to_string(),
+            labels.iter().map(|l| l.to_string()).collect(),
+        ));
+        Ok(number)
     }
 }
 
@@ -714,6 +737,23 @@ mod tests {
         assert_eq!(host.posted_comments(), vec![(42, "lgtm".to_string())]);
         assert_eq!(host.assignments(), vec![(42, "alice".to_string())]);
         assert_eq!(host.merged_prs(), vec![7]);
+    }
+
+    #[tokio::test]
+    async fn mock_scm_host_create_issue() {
+        let repo = RepoSlug::new("owner", "repo");
+        let host = MockScmHost::new();
+
+        let n1 = host.create_issue(&repo, "Title 1", "Body 1", &["label-a"]).await.unwrap();
+        let n2 = host.create_issue(&repo, "Title 2", "Body 2", &["label-b", "label-c"]).await.unwrap();
+
+        assert_eq!(n1, 1);
+        assert_eq!(n2, 2);
+        let created = host.created_issues();
+        assert_eq!(created.len(), 2);
+        assert_eq!(created[0].0, "Title 1");
+        assert_eq!(created[0].2, vec!["label-a"]);
+        assert_eq!(created[1].2, vec!["label-b", "label-c"]);
     }
 
     #[tokio::test]
