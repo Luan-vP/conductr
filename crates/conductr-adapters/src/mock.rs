@@ -15,9 +15,9 @@ use conductr_core::ports::{
     LocalAgent, LocalAgentError, Mailbox, MailboxError, ScmHost, TmuxAgent, TmuxError,
 };
 use conductr_core::types::{
-    CalendarEvent, CiStatus, InstanceHandle, InstanceSpec, Issue, IssueNumber, IssueState,
-    MailKind, MailMessage, MailRef, NewCalendarEvent, Pr, PrNumber, PrState, Provider, RepoSlug,
-    Task, TaskStatus, TmuxSession, UpdateCalendarEvent,
+    CalendarEvent, CiStatus, ClosedPr, InstanceHandle, InstanceSpec, Issue, IssueNumber,
+    IssueState, MailKind, MailMessage, MailRef, NewCalendarEvent, Pr, PrNumber, PrState, Provider,
+    RepoSlug, Task, TaskStatus, TmuxSession, UpdateCalendarEvent,
 };
 
 // ── MockTmuxAgent ─────────────────────────────────────────────────────────────
@@ -234,6 +234,9 @@ pub struct MockScmHost {
     merged_prs: Arc<RwLock<Vec<PrNumber>>>,
     created_issues: Arc<RwLock<Vec<(String, String, Vec<String>)>>>,
     issue_counter: Arc<AtomicU64>,
+    closed_prs: Arc<RwLock<Vec<ClosedPr>>>,
+    labels_added: Arc<RwLock<Vec<(IssueNumber, String)>>>,
+    labels_removed: Arc<RwLock<Vec<(IssueNumber, String)>>>,
 }
 
 impl MockScmHost {
@@ -274,6 +277,21 @@ impl MockScmHost {
     /// Issues created via `create_issue`: `(title, body, labels)`.
     pub fn created_issues(&self) -> Vec<(String, String, Vec<String>)> {
         self.created_issues.read().unwrap().clone()
+    }
+
+    pub fn with_closed_prs(self, prs: impl IntoIterator<Item = ClosedPr>) -> Self {
+        *self.closed_prs.write().unwrap() = prs.into_iter().collect();
+        self
+    }
+
+    /// Labels added via `add_issue_label`: `(issue_number, label)`.
+    pub fn labels_added(&self) -> Vec<(IssueNumber, String)> {
+        self.labels_added.read().unwrap().clone()
+    }
+
+    /// Labels removed via `remove_issue_label`: `(issue_number, label)`.
+    pub fn labels_removed(&self) -> Vec<(IssueNumber, String)> {
+        self.labels_removed.read().unwrap().clone()
     }
 }
 
@@ -361,6 +379,40 @@ impl ScmHost for MockScmHost {
             labels.iter().map(|l| l.to_string()).collect(),
         ));
         Ok(number)
+    }
+
+    async fn add_issue_label(
+        &self,
+        _repo: &RepoSlug,
+        n: IssueNumber,
+        label: &str,
+    ) -> anyhow::Result<()> {
+        self.labels_added.write().unwrap().push((n, label.to_string()));
+        let mut issues = self.issues.write().unwrap();
+        if let Some(issue) = issues.iter_mut().find(|i| i.number == n) {
+            if !issue.labels.iter().any(|l| l == label) {
+                issue.labels.push(label.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    async fn remove_issue_label(
+        &self,
+        _repo: &RepoSlug,
+        n: IssueNumber,
+        label: &str,
+    ) -> anyhow::Result<()> {
+        self.labels_removed.write().unwrap().push((n, label.to_string()));
+        let mut issues = self.issues.write().unwrap();
+        if let Some(issue) = issues.iter_mut().find(|i| i.number == n) {
+            issue.labels.retain(|l| l != label);
+        }
+        Ok(())
+    }
+
+    async fn list_closed_prs(&self, _repo: &RepoSlug) -> anyhow::Result<Vec<ClosedPr>> {
+        Ok(self.closed_prs.read().unwrap().clone())
     }
 }
 

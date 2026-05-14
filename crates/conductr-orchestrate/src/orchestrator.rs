@@ -5,12 +5,21 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
+use crate::architect::{complexity_for, phrase_id_from_title};
 use crate::classifier::{classify, Bucket, Classification};
+use crate::tempo;
 use crate::types::IssueNumber;
 use conductr_core::ports::{LocalCi, Mailbox, ScmHost};
-use conductr_core::types::{CiMode, CiStatus, MailKind, PrLocalCiResult, PrState};
+use conductr_core::types::{
+    CiMode, CiRunRow, CiStatus, MailKind, PrLocalCiResult, PrState, TempoPrRow,
+};
 
 pub use conductr_core::types::{CycleReport, OrchestratorConfig};
+
+/// GH label set on an issue before `@claude` dispatch and cleared on PR
+/// open/close. Acts as the coordination lock between simultaneous orchestrate
+/// calls.
+const IN_FLIGHT_LABEL: &str = "conductr:in-flight";
 
 pub struct Orchestrator<C: ScmHost> {
     pub client: C,
@@ -61,11 +70,54 @@ impl<C: ScmHost> Orchestrator<C> {
         let repo = &self.config.repo;
         info!(%repo, "surveying repo state");
 
+        // ── Housekeeping: fetch closed PRs for tempo write-back + label cleanup.
+        let closed_prs = self.client.list_closed_prs(repo).await.unwrap_or_default();
+
         let open_issues = self.client.list_open_issues(repo).await?;
         let closed = self.client.list_closed_issue_numbers(repo).await?;
         let mut prs = self.client.list_open_prs(repo).await?;
 
-        // Run local CI and resolve CiStatus for each open PR.
+        // Clear conductr:in-flight from issues whose PR has now opened.
+        if !self.config.dry_run {
+            for pr in &prs {
+                if let Some(issue_num) = pr.linked_issue {
+                    if open_issues
+                        .iter()
+                        .find(|i| i.number == issue_num)
+                        .map_or(false, |i| i.has_label(IN_FLIGHT_LABEL))
+                    {
+                        if let Err(e) = self
+                            .client
+                            .remove_issue_label(repo, issue_num, IN_FLIGHT_LABEL)
+                            .await
+                        {
+                            warn!(issue = issue_num, error = %e, "failed to clear in-flight label after PR open");
+                        }
+                    }
+                }
+            }
+
+            // Clear conductr:in-flight from issues whose PR has closed/merged.
+            for pr in &closed_prs {
+                if let Some(issue_num) = pr.linked_issue {
+                    if open_issues
+                        .iter()
+                        .find(|i| i.number == issue_num)
+                        .map_or(false, |i| i.has_label(IN_FLIGHT_LABEL))
+                    {
+                        if let Err(e) = self
+                            .client
+                            .remove_issue_label(repo, issue_num, IN_FLIGHT_LABEL)
+                            .await
+                        {
+                            warn!(issue = issue_num, error = %e, "failed to clear in-flight label after PR close");
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Run local CI and resolve CiStatus for each open PR. ───────────────
         let mut local_ci_results: Vec<PrLocalCiResult> = Vec::new();
         if let Some(local_ci) = &self.local_ci {
             for pr in &mut prs {
@@ -90,9 +142,11 @@ impl<C: ScmHost> Orchestrator<C> {
             }
         }
 
+        // ── Build the set of issues that already have @claude comments. ───────
         let mut triggered: BTreeSet<IssueNumber> = BTreeSet::new();
         for issue in &open_issues {
-            let comments = self.client.list_issue_comments(repo, issue.number).await.unwrap_or_default();
+            let comments =
+                self.client.list_issue_comments(repo, issue.number).await.unwrap_or_default();
             if comments.iter().any(|c| c.contains(&self.config.trigger_comment)) {
                 triggered.insert(issue.number);
             }
@@ -105,7 +159,7 @@ impl<C: ScmHost> Orchestrator<C> {
 
         let mut report = CycleReport { local_ci: local_ci_results, ..CycleReport::default() };
 
-        // 1) Merge any PRs that are passing CI.
+        // ── 1) Merge any PRs that are passing CI. ─────────────────────────────
         for c in &classifications {
             if c.bucket == Bucket::PrOpen {
                 if let Some(pr) = c.pr {
@@ -129,44 +183,138 @@ impl<C: ScmHost> Orchestrator<C> {
             }
         }
 
-        // 2) Trigger Ready issues in parallel (subject to dry_run / scope dedup).
+        // ── 2) Trigger Ready issues (with coordination guards + cap). ─────────
+        //
+        // Coordination order per spec:
+        //   a) conductr:in-flight label check — skip if another orchestrate
+        //      already claimed this issue.
+        //   b) @claude comment scan — already captured in `triggered` set;
+        //      issues with a comment are in TriggeredWaiting bucket, not Ready.
+        //   c) Atomic label add — add conductr:in-flight *before* posting the
+        //      @claude comment so that any concurrent orchestrate sees it.
+        //   d) max_parallel_beats cap — dispatch at most N issues per pass.
+        let mut dispatched_this_pass = 0usize;
+
         for c in &classifications {
-            if c.bucket == Bucket::Ready {
-                // Scope dedup: skip if another agent has claimed this issue.
-                if let Some(mb) = &self.mailbox {
-                    if let Some(msg_id) = Self::check_scope_overlap(mb.as_ref(), c.issue).await {
-                        info!(issue=c.issue, msg_id=%msg_id, "skipping — scope overlap");
-                        report.scope_overlap.push(c.issue);
-                        continue;
+            if c.bucket != Bucket::Ready {
+                if c.bucket == Bucket::TriggeredWaiting {
+                    report.waiting.push(c.issue);
+                } else if c.bucket == Bucket::Blocked {
+                    report.blocked.push(c.issue);
+                } else if c.bucket == Bucket::Human {
+                    report.human.push(c.issue);
+                    if let Some(login) = &self.config.default_human_assignee {
+                        if !self.config.dry_run {
+                            let _ = self.client.assign_issue(repo, c.issue, login).await;
+                        }
                     }
+                }
+                continue;
+            }
+
+            // (a) conductr:in-flight label check.
+            if open_issues
+                .iter()
+                .find(|i| i.number == c.issue)
+                .map_or(false, |i| i.has_label(IN_FLIGHT_LABEL))
+            {
+                info!(issue = c.issue, "skipping — conductr:in-flight label present");
+                continue;
+            }
+
+            // (b) @claude comment check is implicit: issues with @claude are in
+            // TriggeredWaiting, not Ready, so they never reach this branch.
+
+            // Scope dedup: skip if another agent has claimed this issue.
+            if let Some(mb) = &self.mailbox {
+                if let Some(msg_id) = Self::check_scope_overlap(mb.as_ref(), c.issue).await {
+                    info!(issue = c.issue, msg_id = %msg_id, "skipping — scope overlap");
+                    report.scope_overlap.push(c.issue);
+                    continue;
+                }
+            }
+
+            // (d) Chord size cap: skip (don't break) so remaining non-Ready
+            // issues still get reported correctly.
+            if dispatched_this_pass >= self.config.max_parallel_beats {
+                info!(
+                    cap = self.config.max_parallel_beats,
+                    "max_parallel_beats reached; deferring remaining Ready issues"
+                );
+                continue;
+            }
+
+            if self.config.dry_run {
+                info!(issue = c.issue, "would trigger");
+            } else {
+                // (c) Atomic: add label first, then comment.
+                if let Err(e) = self
+                    .client
+                    .add_issue_label(repo, c.issue, IN_FLIGHT_LABEL)
+                    .await
+                {
+                    warn!(issue = c.issue, error = %e, "failed to add in-flight label; skipping dispatch");
+                    continue;
                 }
 
-                if self.config.dry_run {
-                    info!(issue=c.issue, "would trigger");
-                } else {
-                    match self
-                        .client
-                        .comment_issue(repo, c.issue, &self.config.trigger_comment)
-                        .await
-                    {
-                        Ok(_) => {
-                            info!(issue=c.issue, "triggered");
-                            report.triggered.push(c.issue);
-                            report.progress_made = true;
-                        }
-                        Err(e) => warn!(issue=c.issue, error=%e, "trigger failed"),
+                match self
+                    .client
+                    .comment_issue(repo, c.issue, &self.config.trigger_comment)
+                    .await
+                {
+                    Ok(_) => {
+                        info!(issue = c.issue, "triggered");
+                        report.triggered.push(c.issue);
+                        report.progress_made = true;
+                        dispatched_this_pass += 1;
+                    }
+                    Err(e) => {
+                        warn!(issue = c.issue, error = %e, "trigger failed; rolling back in-flight label");
+                        let _ = self
+                            .client
+                            .remove_issue_label(repo, c.issue, IN_FLIGHT_LABEL)
+                            .await;
                     }
                 }
-            } else if c.bucket == Bucket::TriggeredWaiting {
-                report.waiting.push(c.issue);
-            } else if c.bucket == Bucket::Blocked {
-                report.blocked.push(c.issue);
-            } else if c.bucket == Bucket::Human {
-                report.human.push(c.issue);
-                if let Some(login) = &self.config.default_human_assignee {
-                    if !self.config.dry_run {
-                        let _ = self.client.assign_issue(repo, c.issue, login).await;
-                    }
+            }
+        }
+
+        // ── 3) Tempo write-back for closed/merged PRs (batched). ─────────────
+        if let Some(config_path) = &self.config.conductr_config_path {
+            let mut pr_rows: Vec<TempoPrRow> = Vec::new();
+            let mut ci_rows: Vec<CiRunRow> = Vec::new();
+
+            for pr in &closed_prs {
+                let linked_issue = pr.linked_issue
+                    .and_then(|n| open_issues.iter().find(|i| i.number == n));
+
+                let complexity = linked_issue
+                    .map(|i| complexity_for(i, None))
+                    .unwrap_or(conductr_core::types::Complexity::M);
+
+                let phrase = linked_issue.map(|i| phrase_id_from_title(&i.title));
+
+                pr_rows.push(TempoPrRow {
+                    number: pr.number,
+                    title: pr.title.clone(),
+                    phrase,
+                    chord: None,
+                    complexity,
+                    opened: pr.opened_at,
+                    closed: pr.closed_at,
+                    merged: pr.merged,
+                });
+
+                if let Ok(Some(minutes)) =
+                    self.client.latest_ci_run_minutes(repo, &pr.head_ref).await
+                {
+                    ci_rows.push(CiRunRow { pr: pr.number, minutes, ts: pr.closed_at });
+                }
+            }
+
+            if !pr_rows.is_empty() || !ci_rows.is_empty() {
+                if let Err(e) = tempo::append_rows(config_path, &pr_rows, &ci_rows) {
+                    warn!(error = %e, "failed to write tempo rows to .conductr");
                 }
             }
         }
@@ -335,6 +483,16 @@ mod tests {
         }
     }
 
+    fn make_issue(number: IssueNumber, labels: &[&str]) -> Issue {
+        Issue {
+            number,
+            title: format!("issue-{number}"),
+            body: "no deps".into(),
+            labels: labels.iter().map(|s| s.to_string()).collect(),
+            state: IssueState::Open,
+        }
+    }
+
     #[tokio::test]
     async fn ready_issue_gets_triggered() {
         let client = MockScmHost::new().with_issues([Issue {
@@ -451,5 +609,46 @@ mod tests {
             resolve_ci_mode(CiMode::Github, CiStatus::Failing, CiStatus::Passing),
             CiStatus::Passing
         );
+    }
+
+    // ── Coordination tests ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn in_flight_label_prevents_dispatch() {
+        let client = MockScmHost::new().with_issues([make_issue(1, &[IN_FLIGHT_LABEL])]);
+        let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
+        let orch = Orchestrator::new(client, cfg);
+        let report = orch.run_cycle().await.unwrap();
+        // Issue has conductr:in-flight → should be skipped.
+        assert!(report.triggered.is_empty());
+        assert!(orch.client.posted_comments().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_adds_in_flight_label_before_comment() {
+        let client = MockScmHost::new().with_issues([make_issue(1, &[])]);
+        let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
+        let orch = Orchestrator::new(client, cfg);
+        let report = orch.run_cycle().await.unwrap();
+        assert_eq!(report.triggered, vec![1]);
+        // Label must have been added.
+        assert_eq!(orch.client.labels_added(), vec![(1, IN_FLIGHT_LABEL.to_string())]);
+        // Comment must also have been posted.
+        assert!(!orch.client.posted_comments().is_empty());
+    }
+
+    #[tokio::test]
+    async fn max_parallel_beats_caps_dispatch() {
+        let client = MockScmHost::new().with_issues([
+            make_issue(1, &[]),
+            make_issue(2, &[]),
+            make_issue(3, &[]),
+            make_issue(4, &[]),
+        ]);
+        let mut cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
+        cfg.max_parallel_beats = 2;
+        let orch = Orchestrator::new(client, cfg);
+        let report = orch.run_cycle().await.unwrap();
+        assert_eq!(report.triggered.len(), 2, "should dispatch exactly 2 issues");
     }
 }

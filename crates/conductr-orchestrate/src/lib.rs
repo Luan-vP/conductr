@@ -15,6 +15,7 @@ pub mod classifier;
 pub mod deps;
 pub mod graph;
 pub mod orchestrator;
+pub mod tempo;
 pub mod types;
 
 pub use conductr_core::ports::ScmHost;

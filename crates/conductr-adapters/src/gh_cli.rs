@@ -14,7 +14,7 @@ use tokio::process::Command;
 
 use conductr_core::ports::ScmHost;
 use conductr_core::types::{
-    CiStatus, Issue, IssueNumber, IssueState, Pr, PrNumber, PrState, RepoSlug,
+    CiStatus, ClosedPr, Issue, IssueNumber, IssueState, Pr, PrNumber, PrState, RepoSlug,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -212,6 +212,127 @@ impl ScmHost for GhCli {
         ])
         .await?;
         Ok(())
+    }
+
+    async fn add_issue_label(
+        &self,
+        repo: &RepoSlug,
+        n: IssueNumber,
+        label: &str,
+    ) -> anyhow::Result<()> {
+        run_gh(&[
+            "issue",
+            "edit",
+            &n.to_string(),
+            "--repo",
+            &repo.to_string(),
+            "--add-label",
+            label,
+        ])
+        .await?;
+        Ok(())
+    }
+
+    async fn remove_issue_label(
+        &self,
+        repo: &RepoSlug,
+        n: IssueNumber,
+        label: &str,
+    ) -> anyhow::Result<()> {
+        run_gh(&[
+            "issue",
+            "edit",
+            &n.to_string(),
+            "--repo",
+            &repo.to_string(),
+            "--remove-label",
+            label,
+        ])
+        .await?;
+        Ok(())
+    }
+
+    async fn list_closed_prs(&self, repo: &RepoSlug) -> anyhow::Result<Vec<ClosedPr>> {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            number: u64,
+            title: String,
+            body: Option<String>,
+            #[serde(rename = "headRefName")]
+            head_ref_name: String,
+            #[serde(rename = "createdAt")]
+            created_at: chrono::DateTime<chrono::Utc>,
+            #[serde(rename = "closedAt")]
+            closed_at: Option<chrono::DateTime<chrono::Utc>>,
+            #[serde(rename = "mergedAt")]
+            merged_at: Option<chrono::DateTime<chrono::Utc>>,
+        }
+        let out = run_gh(&[
+            "pr",
+            "list",
+            "--repo",
+            &repo.to_string(),
+            "--state",
+            "closed",
+            "--limit",
+            "100",
+            "--json",
+            "number,title,body,headRefName,createdAt,closedAt,mergedAt",
+        ])
+        .await?;
+        let raw: Vec<Raw> = serde_json::from_str(&out)?;
+        Ok(raw
+            .into_iter()
+            .filter_map(|r| {
+                let closed_at = r.closed_at?;
+                let body = r.body.unwrap_or_default();
+                let merged = r.merged_at.is_some();
+                let state = if merged { PrState::Merged } else { PrState::Closed };
+                Some(ClosedPr {
+                    number: r.number,
+                    title: r.title,
+                    body: body.clone(),
+                    head_ref: r.head_ref_name.clone(),
+                    state,
+                    linked_issue: linked_issue_from(&r.head_ref_name, &body),
+                    opened_at: r.created_at,
+                    closed_at,
+                    merged,
+                })
+            })
+            .collect())
+    }
+
+    async fn latest_ci_run_minutes(
+        &self,
+        repo: &RepoSlug,
+        head_ref: &str,
+    ) -> anyhow::Result<Option<f64>> {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            #[serde(rename = "createdAt")]
+            created_at: chrono::DateTime<chrono::Utc>,
+            #[serde(rename = "updatedAt")]
+            updated_at: chrono::DateTime<chrono::Utc>,
+        }
+        let out = run_gh(&[
+            "run",
+            "list",
+            "--repo",
+            &repo.to_string(),
+            "--branch",
+            head_ref,
+            "--limit",
+            "1",
+            "--json",
+            "createdAt,updatedAt",
+        ])
+        .await?;
+        let raw: Vec<Raw> = serde_json::from_str(&out)?;
+        Ok(raw.into_iter().next().map(|r| {
+            let secs = (r.updated_at - r.created_at).num_seconds().max(0);
+            secs as f64 / 60.0
+        }))
     }
 
     async fn create_issue(
