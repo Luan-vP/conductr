@@ -268,6 +268,15 @@ mod tests {
             self.merged.lock().unwrap().push(n);
             Ok(())
         }
+        async fn create_issue(
+            &self,
+            _: &RepoSlug,
+            _title: &str,
+            _body: &str,
+            _labels: &[&str],
+        ) -> anyhow::Result<conductr_core::types::IssueNumber> {
+            Ok(0)
+        }
     }
 
     /// Minimal in-test mailbox that pre-seeds messages.

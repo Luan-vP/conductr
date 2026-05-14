@@ -171,6 +171,18 @@ impl Default for OrchestrateSection {
 
 
 #[derive(Debug, Deserialize, Default)]
+pub struct ArchitectureSection {
+    pub style: Option<String>,
+    pub reference: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct IdleSection {
+    pub last_module: Option<String>,
+    pub last_run: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 struct RawConfig {
     pub project_tag: Option<String>,
     pub repo: Option<String>,
@@ -184,6 +196,10 @@ struct RawConfig {
     pub orchestrate: OrchestrateSection,
     #[serde(default)]
     pub tempo: TempoSection,
+    #[serde(default)]
+    pub architecture: ArchitectureSection,
+    #[serde(default)]
+    pub idle: IdleSection,
 }
 
 /// Read `project_tag` from `.conductr` in `repo_path`.
@@ -324,6 +340,115 @@ pub fn read_tempo_section(repo_path: &Path) -> Result<TempoSection> {
 /// Returns defaults when the file or section is absent.
 pub fn read_orchestrate_section(repo_path: &Path) -> Result<OrchestrateSection> {
     read_raw(repo_path).map(|c| c.orchestrate)
+}
+
+/// Read the `[architecture]` section from `.conductr` in `repo_path`.
+/// Returns defaults when the file or section is absent.
+pub fn read_architecture_section(repo_path: &Path) -> Result<ArchitectureSection> {
+    read_raw(repo_path).map(|c| c.architecture)
+}
+
+/// Read the `[idle]` section from `.conductr` in `repo_path`.
+/// Returns defaults when the file or section is absent.
+pub fn read_idle_section(repo_path: &Path) -> Result<IdleSection> {
+    read_raw(repo_path).map(|c| c.idle)
+}
+
+/// Read the top-level `repo` key from `.conductr` in `repo_path`.
+/// Returns `None` when the file or key is absent.
+pub fn read_project_repo(repo_path: &Path) -> Result<Option<String>> {
+    read_raw(repo_path).map(|c| c.repo)
+}
+
+/// Update `[idle].last_module` and `[idle].last_run` in `.conductr` while
+/// preserving all other content (comments, other sections).
+pub fn write_idle_state(repo_path: &Path, last_module: &str, last_run: &str) -> Result<()> {
+    let dot_conductr = repo_path.join(".conductr");
+    let content = if dot_conductr.exists() {
+        std::fs::read_to_string(&dot_conductr)
+            .with_context(|| format!("reading {}", dot_conductr.display()))?
+    } else {
+        String::new()
+    };
+    let updated = patch_idle_section(&content, last_module, last_run);
+    std::fs::write(&dot_conductr, updated)
+        .with_context(|| format!("writing {}", dot_conductr.display()))
+}
+
+fn patch_idle_section(content: &str, last_module: &str, last_run: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let trailing_newline = content.ends_with('\n');
+
+    let mut idle_start: Option<usize> = None;
+    let mut next_section: Option<usize> = None;
+
+    for (i, &line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if t == "[idle]" {
+            idle_start = Some(i);
+        } else if idle_start.is_some()
+            && t.starts_with('[')
+            && !t.starts_with("[[")
+            && t.ends_with(']')
+        {
+            next_section = Some(i);
+            break;
+        }
+    }
+
+    let lm_line = format!("last_module = \"{last_module}\"");
+    let lr_line = format!("last_run    = \"{last_run}\"");
+
+    if let Some(start) = idle_start {
+        let end = next_section.unwrap_or(lines.len());
+
+        let mut result: Vec<String> = Vec::with_capacity(lines.len() + 2);
+        let mut found_lm = false;
+        let mut found_lr = false;
+
+        for (i, &line) in lines.iter().enumerate() {
+            if i >= start + 1 && i < end {
+                let t = line.trim();
+                if t.starts_with("last_module") {
+                    result.push(lm_line.clone());
+                    found_lm = true;
+                } else if t.starts_with("last_run") {
+                    result.push(lr_line.clone());
+                    found_lr = true;
+                } else {
+                    result.push(line.to_string());
+                }
+            } else {
+                result.push(line.to_string());
+            }
+        }
+
+        let insert_base = start + 1;
+        if !found_lm {
+            result.insert(insert_base, lm_line);
+        }
+        if !found_lr {
+            let pos = insert_base + usize::from(!found_lm);
+            result.insert(pos, lr_line);
+        }
+
+        let mut out = result.join("\n");
+        if trailing_newline {
+            out.push('\n');
+        }
+        out
+    } else {
+        let mut out = content.to_string();
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("\n[idle]\n");
+        out.push_str(&lm_line);
+        out.push('\n');
+        out.push_str(&lr_line);
+        out.push('\n');
+        out
+    }
 }
 
 fn read_raw(repo_path: &Path) -> Result<RawConfig> {
@@ -666,5 +791,59 @@ repo        = "acme/foo"
     fn parse_url_conductr_repo() {
         let (_owner_repo, tag) = parse_url("https://github.com/Luan-vP/conductr.git");
         assert_eq!(tag, "conductr");
+    }
+
+    // ── [architecture] + [idle] ──────────────────────────────────────────────
+
+    #[test]
+    fn parses_architecture_section() {
+        let raw = r#"
+[architecture]
+style     = "hexagonal"
+reference = ".claude/base.md"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.architecture.style.as_deref(), Some("hexagonal"));
+        assert_eq!(cfg.architecture.reference.as_deref(), Some(".claude/base.md"));
+    }
+
+    #[test]
+    fn parses_idle_section() {
+        let raw = r#"
+[idle]
+last_module = "conductr-orchestrate"
+last_run    = "2026-05-11T08:00:00Z"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.idle.last_module.as_deref(), Some("conductr-orchestrate"));
+        assert_eq!(cfg.idle.last_run.as_deref(), Some("2026-05-11T08:00:00Z"));
+    }
+
+    #[test]
+    fn patch_idle_section_inserts_when_missing() {
+        let content = "project_tag = \"foo\"\n";
+        let out = patch_idle_section(content, "conductr-pod", "2026-01-01T00:00:00Z");
+        assert!(out.contains("[idle]"));
+        assert!(out.contains("last_module = \"conductr-pod\""));
+        assert!(out.contains("last_run    = \"2026-01-01T00:00:00Z\""));
+        // Original content preserved
+        assert!(out.contains("project_tag = \"foo\""));
+    }
+
+    #[test]
+    fn patch_idle_section_updates_existing() {
+        let content = "[idle]\nlast_module = \"\"\nlast_run    = \"\"\n";
+        let out = patch_idle_section(content, "conductr-tasks", "2026-05-11T09:00:00Z");
+        assert!(out.contains("last_module = \"conductr-tasks\""));
+        assert!(out.contains("last_run    = \"2026-05-11T09:00:00Z\""));
+    }
+
+    #[test]
+    fn patch_idle_section_preserves_surrounding_sections() {
+        let content = "[cadence]\norchestrate = \"*/30 * * * *\"\n[idle]\nlast_module = \"\"\nlast_run = \"\"\n[band]\nagents = []\n";
+        let out = patch_idle_section(content, "conductr-mail", "2026-05-11T10:00:00Z");
+        assert!(out.contains("[cadence]"));
+        assert!(out.contains("[band]"));
+        assert!(out.contains("last_module = \"conductr-mail\""));
     }
 }

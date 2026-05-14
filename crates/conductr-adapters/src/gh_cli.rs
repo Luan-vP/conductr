@@ -213,6 +213,39 @@ impl ScmHost for GhCli {
         .await?;
         Ok(())
     }
+
+    async fn create_issue(
+        &self,
+        repo: &RepoSlug,
+        title: &str,
+        body: &str,
+        labels: &[&str],
+    ) -> anyhow::Result<IssueNumber> {
+        let repo_str = repo.to_string();
+        let mut cmd = Command::new("gh");
+        cmd.args(["issue", "create", "--repo", &repo_str, "--title", title, "--body", body]);
+        for label in labels {
+            cmd.arg("--label").arg(label);
+        }
+        let out = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "`gh issue create` failed ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        let url = String::from_utf8(out.stdout)?.trim().to_string();
+        url.rsplit('/')
+            .next()
+            .and_then(|s| s.trim().parse::<IssueNumber>().ok())
+            .ok_or_else(|| anyhow::anyhow!("could not parse issue number from gh output: {url}"))
+    }
 }
 
 async fn run_gh(args: &[&str]) -> anyhow::Result<String> {

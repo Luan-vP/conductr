@@ -18,10 +18,11 @@ security     = "haiku"
 doc-writer   = "sonnet"
 idle-sweeper = "opus"
 
-[orchestrate]
-max_parallel_beats   = 3        # agent<n> slot cap
-max_parallel_qa      = 2        # qa<n> slot cap
-tmux_complexity_min  = "L"      # escalate to tmux at this complexity or above
+[architecture]
+# Declares the architectural style for `conductr idle` to scan against.
+# Supported: "hexagonal"
+style     = "hexagonal"
+reference = ".claude/base.md"
 
 [cadence]
 # Per-task cron expressions. The host crontab is the source of truth for now;
@@ -30,6 +31,8 @@ tmux_complexity_min  = "L"      # escalate to tmux at this complexity or above
 #
 # orchestrate: every 30 minutes.
 orchestrate = "*/30 * * * *"
+# idle: once an hour, offset from orchestrate to avoid contention.
+idle        = "17 * * * *"
 
 [local]
 # Default local AI agent provider for `conductr run-task`.
@@ -37,6 +40,13 @@ orchestrate = "*/30 * * * *"
 # Valid values: "ollama", "llamacpp", "pi"
 provider = "ollama"
 # model = "qwen3:27b"   # ollama only; omit to use the default (qwen3:27b)
+
+[idle]
+# State written by `conductr idle` after each pass.
+# last_module: the use-case crate scanned most recently (empty = not yet run).
+# last_run:    ISO-8601 timestamp of the most recent pass.
+last_module = ""
+last_run    = ""
 
 [tempo]
 # Per-PR records written by architect and orchestrate passes.
