@@ -19,6 +19,7 @@ pub mod types;
 
 pub use conductr_core::ports::ScmHost;
 pub use conductr_core::types::*;
+pub use architect::{cluster_issues, complexity_for, infer_phrases, phrase_id_from_title, Phrase};
 pub use classifier::classify;
 pub use deps::{parse_dependencies, DepRef};
 pub use graph::topo_batches;

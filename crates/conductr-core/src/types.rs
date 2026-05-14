@@ -327,6 +327,39 @@ pub struct CycleReport {
     pub local_ci: Vec<PrLocalCiResult>,
 }
 
+// ── complexity ────────────────────────────────────────────────────────────────
+
+/// Issue complexity bucket used by the architect ARN and the orchestrate
+/// tempo write-back.  Precedence chain when reading:
+/// 1. GitHub label `complexity/{xs,s,m,l}`
+/// 2. ARN complexity field (set by `architect plan`)
+/// 3. Default `M`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum Complexity {
+    XS,
+    S,
+    M,
+    L,
+}
+
+impl Complexity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Complexity::XS => "XS",
+            Complexity::S => "S",
+            Complexity::M => "M",
+            Complexity::L => "L",
+        }
+    }
+}
+
+impl std::fmt::Display for Complexity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 // ── conductr-instance types ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

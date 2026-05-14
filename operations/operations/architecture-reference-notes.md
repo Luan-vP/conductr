@@ -16,7 +16,8 @@ An ARN comment has two parts.
 ### Part 1 — Local Map
 
 An ASCII dependency tree at the top of the comment, showing the **whole batch**
-with the current issue marked `◄── YOU ARE HERE`:
+with the current issue marked `◄── YOU ARE HERE`, followed by the complexity
+estimate on the next line:
 
 ```
 ## Architecture Reference Note
@@ -36,11 +37,27 @@ with the current issue marked `◄── YOU ARE HERE`:
 #J  Backend endpoint (no frontend deps)
  │
 #K  Integration (depends on everything above)
+
+**Complexity:** M
 ```
 
 Rules: real issue numbers and titles, full graph (not just neighbours),
 parallel relationships annotated, distant branches collapsed with `...` if
 the graph is large.
+
+### Complexity field
+
+`**Complexity:** <XS|S|M|L>` is written by `architect plan` immediately after
+the local map.  It feeds the precedence chain consumed by `orchestrate`
+write-back:
+
+1. GitHub label `complexity/{xs,s,m,l}` — highest priority; humans override
+   without re-planning.
+2. ARN complexity field — set by `architect plan`.
+3. Default `M`.
+
+Buckets: `XS` (trivial, < 30 min), `S` (small, < 2 h), `M` (medium, < 1 day),
+`L` (large, multi-day).
 
 ### Part 2 — Reference Note
 
