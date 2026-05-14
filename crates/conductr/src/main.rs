@@ -102,7 +102,7 @@ enum Cmd {
     Architect(ArchitectArgs),
     /// Sync Google Calendar with the current issue state (decision + test slots).
     Sync(SyncArgs),
-    /// Self-directed scan: architecture check + module clippy/LLM scan → file issues.
+    /// Self-directed scan: architecture check + module clippy scan → file issues (Claude-required).
     Idle(IdleArgs),
 }
 
@@ -2216,59 +2216,118 @@ struct IdleArgs {
     /// Path to the repo root containing `.conductr` (defaults to current directory).
     #[arg(long)]
     repo_path: Option<PathBuf>,
-    /// Print findings without filing issues or advancing state.
+    /// Print what would happen without creating a session or sending commands.
     #[arg(long)]
     dry_run: bool,
-    /// Maximum number of issues to file per pass (default 5).
-    #[arg(long, default_value_t = 5)]
-    max_issues: usize,
-    /// Skip the LLM scan; deterministic checks only.
-    #[arg(long)]
-    no_llm: bool,
 }
 
 async fn run_idle(args: IdleArgs) -> Result<()> {
-    let repo_path = args
+    let session = "conductr-idle";
+    let cwd = args
         .repo_path
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        .map(|p| p.to_string_lossy().into_owned())
+        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| ".".to_string());
 
-    // Read repo slug from .conductr, fall back to env var CONDUCTR_REPO
-    let repo_str = config::read_project_repo(&repo_path)?
-        .or_else(|| std::env::var("CONDUCTR_REPO").ok())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "repo not found in .conductr and CONDUCTR_REPO not set. \
-                 Add `repo = \"owner/repo\"` to .conductr."
-            )
-        })?;
-    let (owner, repo) = repo_str.split_once('/').with_context(|| {
-        format!("invalid repo slug '{repo_str}': expected 'owner/repo'")
-    })?;
-    let repo_slug = conductr_core::types::RepoSlug::new(owner, repo);
+    let skill_cmd = "/idle";
+    let claude_cmd = "claude --dangerously-skip-permissions";
 
-    // Wire up optional local agent
-    let agent: Option<Box<dyn conductr_core::ports::LocalAgent>> = if args.no_llm {
-        None
-    } else {
-        match resolve_provider(None).await {
-            Ok((kind, model)) => Some(wiring::local_agent(kind, model)),
-            Err(e) => {
-                eprintln!("idle: no local agent available ({e}); skipping LLM scan");
-                None
-            }
+    if args.dry_run {
+        let tmux = Tmux::new();
+        return run_idle_dry(&tmux, session, &cwd, claude_cmd, skill_cmd).await;
+    }
+
+    let tmux = Tmux::new();
+    let state = ensure_session(&tmux, session, &cwd)
+        .await
+        .with_context(|| format!("ensuring tmux session '{session}'"))?;
+
+    match &state {
+        SessionState::Existing(Health::Working { activity }) => {
+            println!("idle: session '{session}' is busy ({activity}); skipping");
+            return Ok(());
         }
+        SessionState::Existing(Health::Unknown { reason }) => {
+            println!("idle: session '{session}' is unclassified ({reason}); skipping");
+            return Ok(());
+        }
+        SessionState::Existing(Health::Crashed { .. }) => {
+            println!("idle: session '{session}' crashed — restarting Claude");
+            tmux.send_line(session, claude_cmd)
+                .await
+                .context("restarting Claude after crash")?;
+            wait_for_idle(&tmux, session).await?;
+        }
+        SessionState::Created => {
+            println!("idle: created session '{session}' — starting Claude");
+            tmux.send_line(session, claude_cmd)
+                .await
+                .context("starting Claude in new session")?;
+            wait_for_idle(&tmux, session).await?;
+        }
+        SessionState::Existing(Health::Idle { .. }) => {
+            println!("idle: session '{session}' is idle — sending idle prompt");
+        }
+    }
+
+    println!("idle: sending: {skill_cmd}");
+    tmux.send_line(session, skill_cmd)
+        .await
+        .context("sending idle skill command")?;
+
+    Ok(())
+}
+
+async fn run_idle_dry(
+    tmux: &Tmux,
+    session: &str,
+    cwd: &str,
+    claude_cmd: &str,
+    skill_cmd: &str,
+) -> Result<()> {
+    let sessions = match tmux.list_sessions().await {
+        Ok(s) => s,
+        Err(TmuxError::NoServer) | Err(TmuxError::NotInstalled) => {
+            println!("idle: tmux not running");
+            println!("idle: → would create session '{session}' at cwd={cwd}");
+            println!("idle: → would start Claude: `{claude_cmd}`");
+            println!("idle: → would send: `{skill_cmd}`");
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
     };
 
-    let cfg = idle::IdleRunConfig {
-        repo_path,
-        repo_slug,
-        dry_run: args.dry_run,
-        max_issues: args.max_issues,
-        no_llm: args.no_llm,
-    };
+    if sessions.iter().any(|s| s.name == session) {
+        match diagnose_one(tmux, session).await {
+            Ok(d) => {
+                println!("idle: session '{session}' exists ({})", health_label(&d.health));
+                match &d.health {
+                    Health::Working { activity } => {
+                        println!("idle: → would skip (busy: {activity})");
+                    }
+                    Health::Unknown { reason } => {
+                        println!("idle: → would skip (unclassified: {reason})");
+                    }
+                    Health::Crashed { .. } => {
+                        println!("idle: → would restart Claude: `{claude_cmd}`");
+                        println!("idle: → would send: `{skill_cmd}`");
+                    }
+                    Health::Idle { .. } => {
+                        println!("idle: → would send: `{skill_cmd}`");
+                    }
+                }
+            }
+            Err(e) => println!("idle: session '{session}' exists but diagnose failed: {e}"),
+        }
+    } else {
+        println!("idle: session '{session}' does not exist");
+        println!("idle: cwd = {cwd}");
+        println!("idle: → would create session '{session}'");
+        println!("idle: → would start Claude: `{claude_cmd}`");
+        println!("idle: → would send: `{skill_cmd}`");
+    }
 
-    let scm = GhCli;
-    idle::run(&scm, agent.as_deref(), &cfg).await
+    Ok(())
 }
 
 fn build_architect_plan_prompt(issues: &[String]) -> String {

@@ -1,18 +1,15 @@
-//! `conductr idle` — architecture scan, module scan, and issue filing.
+//! `conductr idle` — architecture scan, module clippy scan, and issue filing.
 //!
-//! Driving-adapter layer: lives in the binary crate, composes existing ports.
+//! Pure helpers only — the CLI bootstraps a tmux+Claude session and sends
+//! `/idle`; the skill drives the workflow from inside that session.
 
 use std::collections::HashSet;
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
-use conductr_core::ports::{LocalAgent, ScmHost};
-use conductr_core::types::RepoSlug;
-use serde::Deserialize;
 
 /// Ordered list of use-case crates for round-robin scanning.
-const USE_CASE_CRATES: &[&str] = &[
+pub const USE_CASE_CRATES: &[&str] = &[
     "conductr-orchestrate",
     "conductr-pod",
     "conductr-tasks",
@@ -31,7 +28,6 @@ const IO_DENY_DEPS: &[&str] = &["reqwest", "hyper"];
 pub enum FindingSeverity {
     Architecture,
     Quality,
-    Suggestion,
 }
 
 #[derive(Debug, Clone)]
@@ -40,90 +36,6 @@ pub struct Finding {
     pub body: String,
     pub severity: FindingSeverity,
     pub fingerprint: String,
-}
-
-pub struct IdleRunConfig {
-    pub repo_path: PathBuf,
-    pub repo_slug: RepoSlug,
-    pub dry_run: bool,
-    pub max_issues: usize,
-    pub no_llm: bool,
-}
-
-// ── Entry point ───────────────────────────────────────────────────────────────
-
-pub async fn run(
-    scm: &dyn ScmHost,
-    agent: Option<&dyn LocalAgent>,
-    cfg: &IdleRunConfig,
-) -> Result<()> {
-    // Phase 1: read config
-    let arch_cfg = crate::config::read_architecture_section(&cfg.repo_path)?;
-    let idle_state = crate::config::read_idle_section(&cfg.repo_path)?;
-
-    // Phase 2: architecture scan
-    let mut findings: Vec<Finding> = Vec::new();
-    if arch_cfg.style.as_deref() == Some("hexagonal") {
-        findings.extend(check_rule1(&cfg.repo_path));
-        findings.extend(check_rule3(&cfg.repo_path));
-        findings.extend(check_rule4(&cfg.repo_path));
-    }
-
-    // Phase 3: module pick + scan
-    let last_module = idle_state.last_module.as_deref().unwrap_or("");
-    let current_module = pick_module(last_module);
-    let module_findings = run_module_scan(&cfg.repo_path, current_module, agent, cfg.no_llm).await;
-    findings.extend(module_findings);
-
-    // Phase 4: file issues (or print for dry-run)
-    let open_titles: HashSet<String> = if cfg.dry_run {
-        HashSet::new()
-    } else {
-        scm.list_open_issues(&cfg.repo_slug)
-            .await?
-            .into_iter()
-            .map(|i| i.title)
-            .collect()
-    };
-
-    let to_file: Vec<&Finding> = findings
-        .iter()
-        .filter(|f| !open_titles.contains(&f.title))
-        .take(cfg.max_issues)
-        .collect();
-
-    if cfg.dry_run {
-        for f in &to_file {
-            println!("[dry-run] {}: {}", severity_label(&f.severity), f.title);
-            println!("{}", f.body);
-            println!("---");
-        }
-    } else {
-        ensure_idle_labels(&cfg.repo_slug).await;
-
-        for f in &to_file {
-            let sev_label = severity_label(&f.severity);
-            scm.create_issue(
-                &cfg.repo_slug,
-                &f.title,
-                &f.body,
-                &["idle-finding", sev_label],
-            )
-            .await?;
-        }
-
-        // Phase 5: persist state
-        let run_ts = chrono::Utc::now().to_rfc3339();
-        crate::config::write_idle_state(&cfg.repo_path, current_module, &run_ts)?;
-    }
-
-    println!(
-        "idle: {} finding(s) total, {} to file, scanned module={}",
-        findings.len(),
-        to_file.len(),
-        current_module,
-    );
-    Ok(())
 }
 
 // ── Module round-robin ────────────────────────────────────────────────────────
@@ -296,42 +208,15 @@ fn has_dep_with_feature(table: &toml::Value, dep_name: &str, feature: &str) -> b
     false
 }
 
-// ── Module scan ───────────────────────────────────────────────────────────────
-
-async fn run_module_scan(
-    repo_path: &Path,
-    crate_name: &str,
-    agent: Option<&dyn LocalAgent>,
-    no_llm: bool,
-) -> Vec<Finding> {
-    let mut findings = Vec::new();
-
-    // Deterministic: cargo clippy
-    match run_clippy(repo_path, crate_name).await {
-        Ok(f) => findings.extend(f),
-        Err(e) => eprintln!("idle: clippy scan failed for {crate_name}: {e}"),
-    }
-
-    // LLM scan (optional)
-    if !no_llm {
-        if let Some(agent) = agent {
-            let llm_findings = llm_scan(crate_name, repo_path, agent).await;
-            findings.extend(llm_findings);
-        }
-    }
-
-    findings
-}
-
 // ── Clippy integration ────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct ClippyMessage {
     reason: String,
     message: Option<ClippyDiagnostic>,
 }
 
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct ClippyDiagnostic {
     level: String,
     message: String,
@@ -340,19 +225,19 @@ struct ClippyDiagnostic {
     spans: Vec<ClippySpan>,
 }
 
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct ClippyCode {
     code: String,
 }
 
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct ClippySpan {
     file_name: String,
     line_start: u32,
     is_primary: bool,
 }
 
-async fn run_clippy(repo_path: &Path, crate_name: &str) -> Result<Vec<Finding>> {
+pub async fn run_clippy(repo_path: &Path, crate_name: &str) -> Result<Vec<Finding>> {
     let output = tokio::process::Command::new("cargo")
         .args(["clippy", "-p", crate_name, "--message-format=json"])
         .current_dir(repo_path)
@@ -364,7 +249,6 @@ async fn run_clippy(repo_path: &Path, crate_name: &str) -> Result<Vec<Finding>> 
 
 pub fn parse_clippy_output(output: &str, crate_name: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
-    // Deduplicate by fingerprint within this run
     let mut seen: HashSet<String> = HashSet::new();
 
     for line in output.lines() {
@@ -407,175 +291,6 @@ pub fn parse_clippy_output(output: &str, crate_name: &str) -> Vec<Finding> {
         });
     }
     findings
-}
-
-// ── LLM scan ──────────────────────────────────────────────────────────────────
-
-const LLM_SOURCE_CAP: usize = 32 * 1024;
-
-async fn llm_scan(
-    crate_name: &str,
-    repo_path: &Path,
-    agent: &dyn LocalAgent,
-) -> Vec<Finding> {
-    let crate_path = repo_path.join("crates").join(crate_name);
-    let source = read_crate_source(&crate_path, LLM_SOURCE_CAP);
-    if source.is_empty() {
-        return vec![];
-    }
-
-    let prompt = format!(
-        "Review this Rust crate named `{crate_name}` and list up to 5 specific, \
-         actionable improvements for refactoring, efficiency, or code quality.\n\n\
-         Format each item as a numbered list starting with a short title followed by \
-         a colon, then a description. Example:\n\
-         1. Replace manual loop with iterator: The `collect` on line 42 can be \
-         written more idiomatically with `.map(...).collect()`.\n\n\
-         Source code:\n\n\
-         ```rust\n{source}\n```"
-    );
-
-    match agent.complete(&prompt).await {
-        Ok(response) => parse_llm_suggestions(crate_name, &response),
-        Err(e) => {
-            eprintln!("idle: LLM scan failed for {crate_name}: {e}");
-            vec![]
-        }
-    }
-}
-
-fn read_crate_source(crate_path: &Path, max_bytes: usize) -> String {
-    let src_path = crate_path.join("src");
-    let mut buf = String::new();
-    collect_rs_files(&src_path, &mut buf, max_bytes);
-    buf
-}
-
-fn collect_rs_files(dir: &Path, buf: &mut String, max_bytes: usize) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
-    paths.sort();
-    for path in paths {
-        if buf.len() >= max_bytes {
-            break;
-        }
-        if path.is_dir() {
-            collect_rs_files(&path, buf, max_bytes);
-        } else if path.extension() == Some(OsStr::new("rs")) {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let remaining = max_bytes.saturating_sub(buf.len());
-                if remaining == 0 {
-                    break;
-                }
-                // Truncate at a valid UTF-8 character boundary.
-                let mut take = content.len().min(remaining);
-                while take > 0 && !content.is_char_boundary(take) {
-                    take -= 1;
-                }
-                buf.push_str(&format!("\n// === {} ===\n", path.display()));
-                buf.push_str(&content[..take]);
-            }
-        }
-    }
-}
-
-pub fn parse_llm_suggestions(crate_name: &str, response: &str) -> Vec<Finding> {
-    let mut findings = Vec::new();
-
-    // Match lines starting with a number followed by period or parenthesis
-    for line in response.lines() {
-        let trimmed = line.trim();
-        // e.g. "1. Title: description" or "1) Title"
-        let rest = if let Some(r) = trimmed
-            .strip_prefix(|c: char| c.is_ascii_digit())
-            .and_then(|r| r.strip_prefix('.').or_else(|| r.strip_prefix(')')))
-        {
-            r.trim()
-        } else {
-            continue;
-        };
-
-        if rest.is_empty() {
-            continue;
-        }
-
-        // Title is the part before the first colon, or the whole line.
-        let title_raw = if let Some((t, _)) = rest.split_once(':') { t.trim() } else { rest };
-        // Safe character-count truncation (no byte-boundary panic).
-        let title: String = title_raw.chars().take(120).collect();
-
-        let slug: String = title
-            .to_lowercase()
-            .chars()
-            .map(|c| if c.is_alphanumeric() { c } else { '-' })
-            .collect::<String>()
-            .split('-')
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("-");
-        let slug_short: String = slug.chars().take(60).collect();
-
-        let fp = format!("llm/{crate_name}/{slug_short}");
-        let body = format!(
-            "## Suggestion\n\n\
-             {rest}\n\n\
-             ## Acceptance criteria\n\n\
-             - [ ] Evaluate and implement (or explicitly reject with justification) \
-             this suggestion in `{crate_name}`.\n\
-             - [ ] `cargo test --workspace` passes.\n\n\
-             <!-- conductr-idle-fingerprint: {fp} -->"
-        );
-        findings.push(Finding {
-            title: format!("refactor: `{crate_name}`: {title}"),
-            body,
-            severity: FindingSeverity::Suggestion,
-            fingerprint: fp,
-        });
-
-        if findings.len() >= 5 {
-            break;
-        }
-    }
-    findings
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn severity_label(s: &FindingSeverity) -> &'static str {
-    match s {
-        FindingSeverity::Architecture => "architecture",
-        FindingSeverity::Quality => "quality",
-        FindingSeverity::Suggestion => "refactor",
-    }
-}
-
-/// Best-effort: create GitHub labels used by idle findings.
-/// Silently ignores errors so a missing `gh` or missing auth doesn't abort the pass.
-async fn ensure_idle_labels(repo: &RepoSlug) {
-    let repo_str = repo.to_string();
-    let labels = [
-        ("idle-finding", "d4c5f9", "Auto-filed by conductr idle"),
-        ("architecture", "e4e669", "Architecture rule violation"),
-        ("quality", "bfd4f2", "Code quality finding"),
-        ("refactor", "c2e0c6", "Refactor suggestion"),
-    ];
-    for (name, color, description) in &labels {
-        let _ = tokio::process::Command::new("gh")
-            .args([
-                "label",
-                "create",
-                name,
-                "--repo",
-                &repo_str,
-                "--color",
-                color,
-                "--description",
-                description,
-                "--force",
-            ])
-            .output()
-            .await;
-    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -749,36 +464,6 @@ tokio = { version = "1", features = ["process", "rt"] }
     fn parse_clippy_skips_errors() {
         let line = r#"{"reason":"compiler-message","package_id":"x","manifest_path":"","target":{"kind":["lib"],"name":"x"},"message":{"level":"error","message":"mismatched types","code":{"code":"E0308","explanation":null},"rendered":"","spans":[],"children":[]}}"#;
         let findings = parse_clippy_output(line, "my-crate");
-        assert!(findings.is_empty());
-    }
-
-    // ── LLM suggestion parsing ────────────────────────────────────────────────
-
-    #[test]
-    fn parse_llm_suggestions_numbered_list() {
-        let response = "Here are suggestions:\n\
-                        1. Use iterators: Replace the loop with map/collect.\n\
-                        2. Extract helper: The inner logic can be a separate function.\n\
-                        3. Remove clone: The value is not used after this point.\n";
-        let findings = parse_llm_suggestions("my-crate", response);
-        assert_eq!(findings.len(), 3);
-        assert!(findings[0].title.contains("my-crate"));
-        assert!(findings[0].fingerprint.starts_with("llm/my-crate/"));
-        assert_eq!(findings[0].severity, FindingSeverity::Suggestion);
-    }
-
-    #[test]
-    fn parse_llm_suggestions_caps_at_five() {
-        let response = (1..=8)
-            .map(|i| format!("{i}. Suggestion {i}: Description {i}.\n"))
-            .collect::<String>();
-        let findings = parse_llm_suggestions("my-crate", &response);
-        assert_eq!(findings.len(), 5);
-    }
-
-    #[test]
-    fn parse_llm_suggestions_empty_response() {
-        let findings = parse_llm_suggestions("my-crate", "");
         assert!(findings.is_empty());
     }
 
