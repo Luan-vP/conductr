@@ -39,16 +39,13 @@ provider = "ollama"
 # model = "qwen3:27b"   # ollama only; omit to use the default (qwen3:27b)
 
 [tempo]
-# Completed orchestrate bars are appended here after each successful pass.
-# Format: { ts = "ISO-8601", merged = N, triggered = N }
-entries = []
-
+# Per-PR records written by architect and orchestrate passes.
 # [[tempo.prs]] — one row per closed PR; appended by `orchestrate` on PR close.
 # Schema (see docs/cadence.md §2):
 #   number     = <int>          PR number
 #   phrase     = "<string>"     optional; absent = ad-hoc
 #   chord      = "<string>"     optional
-#   complexity = "XS|S|M|L"    defaults to "M"
+#   complexity = "XS|S|M|L"     defaults to "M"
 #   opened     = "<ISO-8601>"
 #   closed     = "<ISO-8601>"
 #   merged     = true|false
@@ -58,8 +55,3 @@ entries = []
 #   pr      = <int>
 #   minutes = <float>
 #   ts      = "<ISO-8601>"
-
-[orchestrate]
-# Chord size cap — maximum parallel beats (`@claude` dispatches) at one time.
-# Override here to tune for this repo's CI capacity.
-max_parallel_beats = 3

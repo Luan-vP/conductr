@@ -9,3 +9,5 @@ description = "Project maturity wizard for conductr repositories"
 [dependencies]
 conductr-core = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
