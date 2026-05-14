@@ -121,7 +121,6 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use std::sync::Mutex;
 
     // Serialise tests that mutate LLAMACPP_HOST to avoid races in the parallel test harness.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
