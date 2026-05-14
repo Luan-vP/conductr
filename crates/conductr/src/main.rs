@@ -1383,6 +1383,36 @@ enum ArchitectCmd {
     /// Opens or reuses the `conductr-architect` tmux session, starts Claude if
     /// needed, then sends `/architect review [<target>]`.
     Review(ArchitectReviewArgs),
+    /// Generate a mermaid dependency diagram of services and DI chains (Claude-required).
+    ///
+    /// Finds or spawns a QA pane (`conductr-<tag>-qa<n>`), starts Claude if needed,
+    /// then sends `/architect diagram [--repo-path <path>] [--output <file>] [--tier dependency]`.
+    Diagram(ArchitectDiagramArgs),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum DiagramTier {
+    /// Service dependency + DI chains (v1).
+    Dependency,
+}
+
+#[derive(Debug, Parser)]
+struct ArchitectDiagramArgs {
+    /// Path to the repository to analyse (defaults to cwd).
+    #[arg(long, default_value = ".")]
+    repo_path: PathBuf,
+    /// Output file for the generated diagram, relative to --repo-path.
+    #[arg(long, default_value = "docs/architecture/dependency-diagram.md")]
+    output: PathBuf,
+    /// Diagram tier to generate. v1 accepts only `dependency`.
+    #[arg(long, value_enum, default_value = "dependency")]
+    tier: DiagramTier,
+    /// Working directory for the QA tmux session (defaults to current directory).
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    /// Print the plan without creating sessions, starting Claude, or sending keys.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -1666,6 +1696,7 @@ async fn run_tasks(args: TasksArgs) -> Result<()> {
 async fn run_architect(args: ArchitectArgs) -> Result<()> {
     match args.cmd {
         ArchitectCmd::Review(a) => run_architect_review(a).await,
+        ArchitectCmd::Diagram(a) => run_architect_diagram(a).await,
     }
 }
 
@@ -1781,6 +1812,205 @@ async fn run_architect_review_dry(
         println!("plan: → would start Claude: `{claude_cmd}`");
         println!("plan: → would send: `{skill_cmd}`");
     }
+    Ok(())
+}
+
+// ── Architect diagram ─────────────────────────────────────────────────────────
+
+async fn run_architect_diagram(args: ArchitectDiagramArgs) -> Result<()> {
+    let cwd = args
+        .cwd
+        .map(|p| p.to_string_lossy().into_owned())
+        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| ".".to_string());
+
+    let tag = derive_qa_tag(&args.repo_path);
+    let max_qa = read_max_qa(&args.repo_path);
+    let skill_cmd = build_diagram_skill_cmd(&args.repo_path, &args.output, args.tier);
+    let claude_cmd = "claude --dangerously-skip-permissions";
+
+    if args.dry_run {
+        let tmux = Tmux::new();
+        return run_architect_diagram_dry(&tmux, &tag, max_qa, &cwd, claude_cmd, &skill_cmd).await;
+    }
+
+    let tmux = Tmux::new();
+    let session = find_or_spawn_qa_session(&tmux, &tag, max_qa, &cwd, claude_cmd).await?;
+
+    println!("architect diagram: sending to '{session}': {skill_cmd}");
+    tmux.send_line(&session, &skill_cmd)
+        .await
+        .context("sending diagram skill command to QA pane")?;
+
+    Ok(())
+}
+
+/// Derive the project tag for QA session naming.
+/// Reads `project_tag` from `.conductr`; falls back to the directory name.
+fn derive_qa_tag(repo_path: &std::path::Path) -> String {
+    if let Ok(Some(tag)) = config::read_project_tag(repo_path) {
+        return tag;
+    }
+    repo_path
+        .canonicalize()
+        .unwrap_or_else(|_| repo_path.to_path_buf())
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| {
+            s.to_lowercase()
+                .chars()
+                .map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' { c } else { '-' })
+                .collect::<String>()
+                .trim_matches('-')
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "arch".to_string())
+}
+
+/// Read the QA slot cap from `[orchestrate] max_parallel_qa` in `.conductr`.
+/// Defaults to 2 per the band schema.
+fn read_max_qa(repo_path: &std::path::Path) -> u32 {
+    config::read_orchestrate_section(repo_path)
+        .ok()
+        .and_then(|s| s.max_parallel_qa)
+        .unwrap_or(2)
+}
+
+fn build_diagram_skill_cmd(
+    repo_path: &std::path::Path,
+    output: &std::path::Path,
+    tier: DiagramTier,
+) -> String {
+    let tier_str = match tier {
+        DiagramTier::Dependency => "dependency",
+    };
+    format!(
+        "/architect diagram --repo-path {} --output {} --tier {}",
+        repo_path.display(),
+        output.display(),
+        tier_str,
+    )
+}
+
+/// Find an idle QA session matching `conductr-<tag>-qa*`, or spawn a new one
+/// within `max_qa` slots. Returns the session name to use.
+async fn find_or_spawn_qa_session(
+    tmux: &Tmux,
+    tag: &str,
+    max_qa: u32,
+    cwd: &str,
+    claude_cmd: &str,
+) -> Result<String> {
+    let qa_prefix = format!("conductr-{tag}-qa");
+
+    // Probe existing sessions matching the prefix.
+    let existing = diagnose_all(tmux, Some(&qa_prefix)).await.unwrap_or_default();
+
+    // Reuse the first idle slot.
+    for d in &existing {
+        if matches!(d.health, Health::Idle { .. }) {
+            println!("architect diagram: reusing idle QA session '{}'", d.session.name);
+            return Ok(d.session.name.clone());
+        }
+    }
+
+    // No idle slot — try to spawn a new one within cap.
+    for n in 1..=max_qa {
+        let name = format!("{qa_prefix}{n}");
+        let slot_busy = existing.iter().any(|d| {
+            d.session.name == name && !matches!(d.health, Health::Idle { .. })
+        });
+        if slot_busy {
+            continue;
+        }
+        let state = ensure_session(tmux, &name, cwd)
+            .await
+            .with_context(|| format!("ensuring QA session '{name}'"))?;
+        match &state {
+            SessionState::Existing(Health::Crashed { .. }) => {
+                println!("architect diagram: QA session '{name}' crashed — restarting Claude");
+                tmux.send_line(&name, claude_cmd)
+                    .await
+                    .context("restarting Claude after crash")?;
+                wait_for_idle(tmux, &name).await?;
+            }
+            SessionState::Created => {
+                println!("architect diagram: created QA session '{name}' — starting Claude");
+                tmux.send_line(&name, claude_cmd)
+                    .await
+                    .context("starting Claude in new QA session")?;
+                wait_for_idle(tmux, &name).await?;
+            }
+            _ => {}
+        }
+        return Ok(name);
+    }
+
+    anyhow::bail!(
+        "all {max_qa} QA slot(s) for tag '{tag}' are busy; \
+         try again when a slot frees up, or raise [orchestrate] max_parallel_qa in .conductr"
+    )
+}
+
+async fn run_architect_diagram_dry(
+    tmux: &Tmux,
+    tag: &str,
+    max_qa: u32,
+    cwd: &str,
+    claude_cmd: &str,
+    skill_cmd: &str,
+) -> Result<()> {
+    let qa_prefix = format!("conductr-{tag}-qa");
+
+    let sessions = match tmux.list_sessions().await {
+        Ok(s) => s,
+        Err(TmuxError::NoServer) | Err(TmuxError::NotInstalled) => {
+            let target = format!("{qa_prefix}1");
+            println!("plan: tmux not running");
+            println!("plan: → would create QA session '{target}' at cwd={cwd}");
+            println!("plan: → would start Claude: `{claude_cmd}`");
+            println!("plan: → would send: `{skill_cmd}`");
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let qa_sessions: Vec<_> = sessions.iter().filter(|s| s.name.starts_with(&qa_prefix)).collect();
+
+    if qa_sessions.is_empty() {
+        let target = format!("{qa_prefix}1");
+        println!("plan: no QA sessions matching '{qa_prefix}*'");
+        println!("plan: → would create '{target}' at cwd={cwd}");
+        println!("plan: → would start Claude: `{claude_cmd}`");
+        println!("plan: → would send: `{skill_cmd}`");
+        return Ok(());
+    }
+
+    // Look for an idle slot among existing sessions.
+    for s in &qa_sessions {
+        match diagnose_one(tmux, &s.name).await {
+            Ok(d) if matches!(d.health, Health::Idle { .. }) => {
+                println!("plan: QA session '{}' is idle → would reuse it", s.name);
+                println!("plan: → would send: `{skill_cmd}`");
+                return Ok(());
+            }
+            Ok(d) => println!("plan: QA session '{}' is {} — skipping", s.name, health_label(&d.health)),
+            Err(e) => println!("plan: QA session '{}' probe failed: {e}", s.name),
+        }
+    }
+
+    let count = qa_sessions.len();
+    if (count as u32) < max_qa {
+        let n = count + 1;
+        let target = format!("{qa_prefix}{n}");
+        println!("plan: all existing QA slots busy → would spawn '{target}'");
+        println!("plan: → would start Claude: `{claude_cmd}`");
+        println!("plan: → would send: `{skill_cmd}`");
+    } else {
+        println!("plan: all {max_qa} QA slot(s) for tag '{tag}' busy — would bail");
+    }
+
     Ok(())
 }
 
