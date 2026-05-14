@@ -1,4 +1,4 @@
-//! `conductr` CLI: orchestrate, instance, schedule, tasks, setup, mail, local, cadence, pod, architect.
+//! `conductr` CLI: orchestrate, instance, schedule, tasks, setup, mail, local, cadence, pod, architect, sync.
 
 mod cadence;
 mod config;
@@ -25,6 +25,8 @@ use conductr_pod::{
 };
 use conductr_schedule::{parse, parse_plan, pattern_to_dsl, plan_to_pattern, render_ascii};
 use conductr_setup::wizard::WizardMode;
+use conductr_adapters::gcal::GcalAdapter;
+use conductr_calendar::{reconcile, schedule_test_slot};
 use conductr_tasks::sync::{create_task, list_tasks, sync_tasks};
 use serde::Serialize;
 use wiring::TrackerKind;
@@ -97,6 +99,8 @@ enum Cmd {
     RunTask(RunTaskArgs),
     /// Workspace-wide architectural review, or targeted review of a PR or issue (Claude-required).
     Architect(ArchitectArgs),
+    /// Sync Google Calendar with the current issue state (decision + test slots).
+    Sync(SyncArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -424,6 +428,7 @@ async fn main() -> Result<()> {
         Cmd::Cadence(a) => run_cadence(a),
         Cmd::RunTask(a) => run_run_task(a).await,
         Cmd::Architect(a) => run_architect(a).await,
+        Cmd::Sync(a) => run_sync(a).await,
     }
 }
 
@@ -2014,12 +2019,156 @@ async fn run_architect_diagram_dry(
     Ok(())
 }
 
+// ── Sync ──────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Parser)]
+struct SyncArgs {
+    #[command(subcommand)]
+    cmd: Option<SyncCmd>,
+    /// Print plan without writing to Google Calendar.
+    #[arg(long)]
+    dry_run: bool,
+    /// `owner/repo` slug (defaults to `repo` in `.conductr`).
+    #[arg(long)]
+    repo: Option<String>,
+    /// Google Calendar ID (defaults to $GCAL_CALENDAR_ID or `primary`).
+    #[arg(long)]
+    calendar_id: Option<String>,
+    /// Path to the repo root for reading `.conductr` (defaults to cwd).
+    #[arg(long)]
+    repo_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+enum SyncCmd {
+    /// Manually place a single test slot in the next eligible window.
+    ScheduleTest(ScheduleTestArgs),
+}
+
+#[derive(Debug, Parser)]
+struct ScheduleTestArgs {
+    /// Tag for the test slot (use `*` for no specific tag).
+    #[arg(long, default_value = "*")]
+    tag: String,
+    /// Subject / description for the test slot.
+    #[arg(long)]
+    subject: String,
+    /// Print plan without writing to Google Calendar.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+async fn run_sync(args: SyncArgs) -> Result<()> {
+    let token = std::env::var("GCAL_OAUTH_TOKEN")
+        .with_context(|| "GCAL_OAUTH_TOKEN is not set — obtain a Google OAuth access token")?;
+    let calendar_id = args
+        .calendar_id
+        .or_else(|| std::env::var("GCAL_CALENDAR_ID").ok())
+        .unwrap_or_else(|| "primary".to_string());
+    let calendar = GcalAdapter::new(token, calendar_id);
+
+    match args.cmd {
+        None => {
+            // Default: full reconcile
+            let repo_root = args
+                .repo_root
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+            let repo_slug = resolve_sync_repo(args.repo.as_deref(), &repo_root)?;
+            let project_tag = config::read_project_tag(&repo_root)?;
+
+            let scm = GhCli;
+            let report = reconcile(
+                &calendar,
+                &scm,
+                &repo_slug,
+                project_tag.as_deref(),
+                args.dry_run,
+            )
+            .await?;
+            println!("{report}");
+        }
+        Some(SyncCmd::ScheduleTest(st)) => {
+            let tag = if st.tag == "*" { None } else { Some(st.tag.as_str()) };
+            let report =
+                schedule_test_slot(&calendar, tag, &st.subject, st.dry_run || args.dry_run)
+                    .await?;
+            println!("{report}");
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_sync_repo(explicit: Option<&str>, repo_root: &std::path::Path) -> Result<conductr_orchestrate::RepoSlug> {
+    if let Some(slug) = explicit {
+        let (owner, repo) = slug
+            .split_once('/')
+            .with_context(|| format!("invalid --repo `{slug}` (expected owner/repo)"))?;
+        return Ok(conductr_orchestrate::RepoSlug::new(owner, repo));
+    }
+    // Fall back to `.conductr`
+    let raw = std::fs::read_to_string(repo_root.join(".conductr")).ok();
+    if let Some(content) = raw {
+        #[derive(serde::Deserialize)]
+        struct Minimal { repo: Option<String> }
+        if let Ok(cfg) = toml::from_str::<Minimal>(&content) {
+            if let Some(slug) = cfg.repo {
+                let (owner, repo) = slug
+                    .split_once('/')
+                    .with_context(|| format!("`.conductr` repo field `{slug}` is not owner/repo"))?;
+                return Ok(conductr_orchestrate::RepoSlug::new(owner, repo));
+            }
+        }
+    }
+    anyhow::bail!(
+        "no repo specified. Pass --repo owner/repo or set `repo` in .conductr"
+    )
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
     use local_detect::{ProbeRow, ProbeStatus};
+
+    /// Every skill with `cli_parity: true` in its SKILL.md frontmatter must
+    /// have a matching top-level CLI subcommand.  This test picks up new skills
+    /// automatically once they set the flag — no manual registration needed.
+    #[test]
+    fn cli_parity_skills_have_matching_subcommands() {
+        let skills_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("skills"));
+
+        let skills_dir = match skills_dir {
+            Some(p) if p.is_dir() => p,
+            _ => return, // running outside the repo — skip
+        };
+
+        let cmd = Cli::command();
+
+        for entry in std::fs::read_dir(&skills_dir).unwrap() {
+            let entry = entry.unwrap();
+            let skill_md = entry.path().join("SKILL.md");
+            if !skill_md.exists() {
+                continue;
+            }
+            let content = std::fs::read_to_string(&skill_md).unwrap_or_default();
+            if !content.contains("cli_parity: true") {
+                continue;
+            }
+            let skill_name = entry.file_name();
+            let skill_name = skill_name.to_string_lossy();
+            assert!(
+                cmd.find_subcommand(skill_name.as_ref()).is_some(),
+                "skill '{skill_name}' declares cli_parity: true but no matching CLI subcommand exists"
+            );
+        }
+    }
 
     fn probe(provider: &'static str, status: ProbeStatus) -> ProbeRow {
         ProbeRow { provider, status, detail: String::new() }

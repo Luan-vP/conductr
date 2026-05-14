@@ -18,7 +18,8 @@ mock        = []
 ollama      = ["dep:tokio", "dep:reqwest"]
 llamacpp    = ["dep:tokio", "dep:reqwest"]
 local-ci    = ["dep:tokio"]
-full        = ["tmux", "beads", "notion", "gh-cli", "mail-fs", "mail-github", "mock", "ollama", "llamacpp", "local-ci"]
+gcal        = ["dep:tokio", "dep:reqwest"]
+full        = ["tmux", "beads", "notion", "gh-cli", "mail-fs", "mail-github", "mock", "ollama", "llamacpp", "local-ci", "gcal"]
 
 [dependencies]
 conductr-core = { workspace = true }

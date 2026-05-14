@@ -1,0 +1,18 @@
+[package]
+name = "conductr-calendar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Calendar reconcile use-case for conductr: sync decision slots and test slots"
+
+[dependencies]
+conductr-core = { workspace = true }
+anyhow        = { workspace = true }
+async-trait   = { workspace = true }
+chrono        = { workspace = true }
+tracing       = { workspace = true }
+
+[dev-dependencies]
+conductr-adapters = { path = "../conductr-adapters", features = ["mock"] }
+tokio             = { workspace = true }

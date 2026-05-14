@@ -1,12 +1,14 @@
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 pub use crate::types::{InstanceError, LocalAgentError, TmuxError};
 
 use crate::types::{
-    InstanceHandle, InstanceSpec, Issue, IssueNumber, LocalCiReport, MailKind, MailMessage,
-    MailRef, Pr, PrNumber, RepoSlug, Task, TmuxSession,
+    CalendarEvent, InstanceHandle, InstanceSpec, Issue, IssueNumber, LocalCiReport, MailKind,
+    MailMessage, MailRef, NewCalendarEvent, Pr, PrNumber, RepoSlug, Task, TmuxSession,
+    UpdateCalendarEvent,
 };
 
 // ── IssueTracker ──────────────────────────────────────────────────────────────
@@ -133,6 +135,43 @@ pub enum LocalCiError {
 #[async_trait]
 pub trait LocalCi: Send + Sync {
     async fn run(&self, head_ref: &str) -> anyhow::Result<LocalCiReport>;
+}
+
+// ── CalendarPort ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, thiserror::Error)]
+pub enum CalendarError {
+    #[error("http: {0}")]
+    Http(String),
+    #[error("authentication failed — check GCAL_OAUTH_TOKEN")]
+    Auth,
+    #[error("api error: {0}")]
+    Api(String),
+    #[error("parse error: {0}")]
+    Parse(String),
+    #[error("not found: {0}")]
+    NotFound(String),
+}
+
+#[async_trait]
+pub trait CalendarPort: Send + Sync {
+    async fn list_upcoming_events(
+        &self,
+        from: DateTime<Utc>,
+    ) -> Result<Vec<CalendarEvent>, CalendarError>;
+
+    async fn create_event(
+        &self,
+        event: NewCalendarEvent,
+    ) -> Result<CalendarEvent, CalendarError>;
+
+    async fn update_event(
+        &self,
+        id: &str,
+        event: UpdateCalendarEvent,
+    ) -> Result<CalendarEvent, CalendarError>;
+
+    async fn delete_event(&self, id: &str) -> Result<(), CalendarError>;
 }
 
 // ── Mailbox ───────────────────────────────────────────────────────────────────

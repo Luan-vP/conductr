@@ -8,15 +8,16 @@ use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use conductr_core::ports::{
-    InstanceError, InstanceProvider, IssueTracker, IssueTrackerError, LocalAgent, LocalAgentError,
-    Mailbox, MailboxError, ScmHost, TmuxAgent, TmuxError,
+    CalendarError, CalendarPort, InstanceError, InstanceProvider, IssueTracker, IssueTrackerError,
+    LocalAgent, LocalAgentError, Mailbox, MailboxError, ScmHost, TmuxAgent, TmuxError,
 };
 use conductr_core::types::{
-    CiStatus, InstanceHandle, InstanceSpec, Issue, IssueNumber, IssueState, MailKind, MailMessage,
-    MailRef, Pr, PrNumber, PrState, Provider, RepoSlug, Task, TaskStatus, TmuxSession,
+    CalendarEvent, CiStatus, InstanceHandle, InstanceSpec, Issue, IssueNumber, IssueState,
+    MailKind, MailMessage, MailRef, NewCalendarEvent, Pr, PrNumber, PrState, Provider, RepoSlug,
+    Task, TaskStatus, TmuxSession, UpdateCalendarEvent,
 };
 
 // ── MockTmuxAgent ─────────────────────────────────────────────────────────────
@@ -483,7 +484,132 @@ impl LocalAgent for PiStub {
     }
 }
 
+// ── MockCalendarPort ─────────────────────────────────────────────────────────
+
+/// In-memory `CalendarPort` for use in tests.
+#[derive(Debug, Default, Clone)]
+pub struct MockCalendarPort {
+    events: Arc<RwLock<Vec<CalendarEvent>>>,
+    counter: Arc<AtomicU64>,
+    created: Arc<RwLock<Vec<CalendarEvent>>>,
+    deleted_ids: Arc<RwLock<Vec<String>>>,
+}
+
+impl MockCalendarPort {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Pre-seed events (e.g. window and blocker events).
+    pub fn with_events(self, events: impl IntoIterator<Item = CalendarEvent>) -> Self {
+        *self.events.write().unwrap() = events.into_iter().collect();
+        self
+    }
+
+    /// Events created via `create_event`.
+    pub fn created_events(&self) -> Vec<CalendarEvent> {
+        self.created.read().unwrap().clone()
+    }
+
+    /// IDs deleted via `delete_event`.
+    pub fn deleted_ids(&self) -> Vec<String> {
+        self.deleted_ids.read().unwrap().clone()
+    }
+
+    /// All events currently in the store (seeded + created).
+    pub fn all_events(&self) -> Vec<CalendarEvent> {
+        self.events.read().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl CalendarPort for MockCalendarPort {
+    async fn list_upcoming_events(
+        &self,
+        from: DateTime<Utc>,
+    ) -> Result<Vec<CalendarEvent>, CalendarError> {
+        Ok(self
+            .events
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|e| e.start >= from)
+            .cloned()
+            .collect())
+    }
+
+    async fn create_event(
+        &self,
+        event: NewCalendarEvent,
+    ) -> Result<CalendarEvent, CalendarError> {
+        let id = format!("mock-cal-{}", self.counter.fetch_add(1, Ordering::SeqCst));
+        let ev = CalendarEvent {
+            id: id.clone(),
+            title: event.title,
+            start: event.start,
+            end: event.end,
+            description: Some(event.description),
+        };
+        self.events.write().unwrap().push(ev.clone());
+        self.created.write().unwrap().push(ev.clone());
+        Ok(ev)
+    }
+
+    async fn update_event(
+        &self,
+        id: &str,
+        event: UpdateCalendarEvent,
+    ) -> Result<CalendarEvent, CalendarError> {
+        let mut store = self.events.write().unwrap();
+        let ev = store
+            .iter_mut()
+            .find(|e| e.id == id)
+            .ok_or_else(|| CalendarError::NotFound(id.to_string()))?;
+        if let Some(t) = event.title {
+            ev.title = t;
+        }
+        if let Some(s) = event.start {
+            ev.start = s;
+        }
+        if let Some(e) = event.end {
+            ev.end = e;
+        }
+        if let Some(d) = event.description {
+            ev.description = Some(d);
+        }
+        Ok(ev.clone())
+    }
+
+    async fn delete_event(&self, id: &str) -> Result<(), CalendarError> {
+        let mut store = self.events.write().unwrap();
+        let pos = store
+            .iter()
+            .position(|e| e.id == id)
+            .ok_or_else(|| CalendarError::NotFound(id.to_string()))?;
+        store.remove(pos);
+        self.deleted_ids.write().unwrap().push(id.to_string());
+        Ok(())
+    }
+}
+
 // ── Builder helpers ───────────────────────────────────────────────────────────
+
+/// Convenience constructor for a timed calendar event.
+pub fn make_calendar_event(
+    id: &str,
+    title: &str,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    description: Option<&str>,
+) -> CalendarEvent {
+    CalendarEvent {
+        id: id.to_string(),
+        title: title.to_string(),
+        start,
+        end,
+        description: description.map(str::to_string),
+    }
+}
 
 /// Convenience constructor for a simple open issue.
 pub fn make_issue(number: IssueNumber, title: &str, labels: &[&str]) -> Issue {
