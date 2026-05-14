@@ -129,8 +129,13 @@ Structured guidance for the implementing agent:
 3. **Cluster issues** by dependency reachability: issues that are connected (directly or transitively) form one cluster.
 4. **Name each phrase** from the highest-level issue in the cluster (the sink: no other cluster member depends on it). Slugify by taking the segment before the first colon, lowercasing, and replacing non-alphanumeric runs with hyphens. Example: `"begin: cron-friendly entry point"` → `begin`.
 5. **Estimate complexity** for each issue using architect judgment: `XS` (trivial, < 30 min), `S` (small, < 2 h), `M` (medium, < 1 day), `L` (large, multi-day). Write the estimate into the ARN `**Complexity:**` field.
-6. **Write ARNs** on each issue (same format as the review workflow below), including the `**Complexity:**` line after the Local Map.
-7. **Print a summary** of phrases and complexity assignments.
+6. **Infer runner** for each issue using this precedence chain (first match wins):
+   a. **Backend-signal keywords** — scan the issue body (title + description) for any of: `db`, `migration`, `integration`, `backend`, `infrastructure`. Also apply architect judgment for related signals (e.g. `database`, `schema`, `sql`, `server`, `api`, `auth`, `seed`). If any signal is present, set `runner = tmux`.
+   b. **Complexity threshold** — if the complexity estimate (step 5) is ≥ `[orchestrate] tmux_complexity_min` (read from `.conductr`; default `L`), set `runner = tmux`.
+   c. **Default** — `runner = web`.
+   Write the result into the ARN as `**Runner:** web` or `**Runner:** tmux` immediately after the `**Complexity:**` line. You may override the heuristic with explicit judgment.
+7. **Write ARNs** on each issue (same format as the review workflow below), including the `**Complexity:**` and `**Runner:**` lines after the Local Map.
+8. **Print a summary** of phrases, complexity assignments, and runner assignments.
 
 No `--phrase` override flag exists. Phrase scoping is strictly inferred.
 
