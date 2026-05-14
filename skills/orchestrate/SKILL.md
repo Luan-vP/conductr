@@ -115,17 +115,17 @@ Plan: Review and merge PR #P1, then trigger #A and #B in parallel.
    ```
 4. This may unblock new issues — re-classify after each merge.
 
-**Then, trigger unblocked issues** — comment on all ready issues in parallel.
+**Then, trigger unblocked issues** — dispatch all ready issues in parallel using `runner_for` (see B4 for the full helper definition).
 
-**Skip `human`-labeled issues** — issues with the `human` label require human intervention and must never be triggered with `@claude please implement`. Assign them to the resolved human assignee:
+**Skip `human`-labeled issues** — issues with the `human` label require human intervention and must never be triggered. Assign them to the resolved human assignee:
 ```
 gh issue edit <N> --add-assignee <resolved-assignee>
 ```
 They remain in the dependency graph: downstream issues stay blocked until the `human` issue is closed manually. Report these to the user so they know what manual work is needed to unblock progress.
 
-```
-gh issue comment <N> --body "@claude please implement"
-```
+For each ready non-human issue, apply `runner_for(issue)`:
+- `runner = web` → `gh issue comment <N> --body "@claude please implement"`
+- `runner = tmux` → `conductr run-task --issue <N>`
 
 If there are more than 3 unblocked issues and no ARNs exist yet, run the architect agent first (see Architecture Pass below).
 
@@ -222,10 +222,28 @@ Needs human action (not triggered, assigned to @<resolved-assignee>):
 These issues block downstream batches until closed manually.
 ```
 
-**Trigger all non-human issues in the batch** simultaneously:
+**Determine the runner for each issue** using `runner_for(issue)` before triggering:
+
 ```
-gh issue comment <N> --body "@claude please implement"
+runner_for(issue):
+  labels ← gh issue view <N> --json labels --jq '[.labels[].name]'
+  if "runner/tmux" in labels  → runner = tmux
+  if "runner/web"  in labels  → runner = web
+  arn ← most recent ARN comment on the issue (look for "## Architecture Reference Note")
+  if arn contains "**Runner:** tmux" → runner = tmux
+  if arn contains "**Runner:** web"  → runner = web
+  runner = web   # default
 ```
+
+**Trigger all non-human issues in the batch** simultaneously. Use the `runner` value to select the dispatch path:
+- `runner = web` → trigger via GitHub issue comment (standard bot dispatch):
+  ```
+  gh issue comment <N> --body "@claude please implement"
+  ```
+- `runner = tmux` → open (or reuse) a local tmux session and run Claude there:
+  ```
+  conductr run-task --issue <N>
+  ```
 
 **Poll for PRs** — check every 60 seconds, up to 30 minutes per issue.
 

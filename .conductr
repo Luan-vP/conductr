@@ -48,6 +48,14 @@ provider = "ollama"
 last_module = ""
 last_run    = ""
 
+[orchestrate]
+# Chord size cap; per-repo override.
+max_parallel_beats = 3
+# Minimum complexity bucket that routes an issue to a tmux runner (rather than web).
+# Precedence: backend-signal keywords > this threshold > default "web".
+# Valid values: "XS" | "S" | "M" | "L"
+tmux_complexity_min = "L"
+
 [tempo]
 # Per-PR records written by architect and orchestrate passes.
 # [[tempo.prs]] — one row per closed PR; appended by `orchestrate` on PR close.

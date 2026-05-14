@@ -17,7 +17,7 @@ An ARN comment has two parts.
 
 An ASCII dependency tree at the top of the comment, showing the **whole batch**
 with the current issue marked `◄── YOU ARE HERE`, followed by the complexity
-estimate on the next line:
+estimate and runner assignment on the next two lines:
 
 ```
 ## Architecture Reference Note
@@ -39,6 +39,7 @@ estimate on the next line:
 #K  Integration (depends on everything above)
 
 **Complexity:** M
+**Runner:** web
 ```
 
 Rules: real issue numbers and titles, full graph (not just neighbours),
@@ -58,6 +59,19 @@ write-back:
 
 Buckets: `XS` (trivial, < 30 min), `S` (small, < 2 h), `M` (medium, < 1 day),
 `L` (large, multi-day).
+
+### Runner field
+
+`**Runner:** web` or `**Runner:** tmux` is written by `architect plan` immediately after the Complexity field.  It tells `orchestrate` which execution environment to use when dispatching the issue.
+
+Inference order (first match wins):
+1. **Backend-signal keywords** — if the issue body contains any of `db`, `migration`, `integration`, `backend`, `infrastructure` (or similar keywords surfaced by architect judgment), set `runner = tmux`.
+2. **Complexity threshold** — if complexity ≥ `[orchestrate] tmux_complexity_min` (default `L`), set `runner = tmux`.
+3. **Default** — `runner = web`.
+
+The architect can always override the heuristic with explicit judgment written directly into the ARN.
+
+Once written into the ARN, the runner assignment is static unless a human re-labels the issue (see read helper below).
 
 ### Part 2 — Reference Note
 
@@ -95,6 +109,23 @@ Structured guidance for the implementing agent:
 ### Open Questions
 - Decisions the implementing agent may need to make; suggest a default and
   flag for review
+```
+
+## `runner_for` read helper
+
+`orchestrate` calls `runner_for(issue)` at dispatch time to determine the execution environment.  Precedence chain (first match wins):
+
+1. **GitHub label** `runner/web` or `runner/tmux` — human override; highest priority.
+2. **ARN `runner` field** — written by `architect plan`.
+3. **Default** `web` — safety fallback (cheaper to run on web than to error).
+
+```
+runner_for(issue):
+  if issue has label "runner/tmux" → return tmux
+  if issue has label "runner/web"  → return web
+  if ARN comment contains "**Runner:** tmux" → return tmux
+  if ARN comment contains "**Runner:** web"  → return web
+  return web   # default
 ```
 
 ## When ARNs run
