@@ -3,8 +3,11 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use conductr_core::types::CiMode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+// ── [local] ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Default)]
 pub struct LocalSection {
@@ -13,6 +16,8 @@ pub struct LocalSection {
     /// Default model name (ollama only; overridden by `--model` / `CONDUCTR_LOCAL_MODEL`).
     pub model: Option<String>,
 }
+
+// ── [ci] ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct CiSection {
@@ -25,11 +30,19 @@ pub struct CiSection {
     /// How to resolve local vs GitHub CI status.
     #[serde(default)]
     pub mode: CiMode,
+    /// Per-PR CI run records appended by the orchestrate pass (`[[ci.runs]]`).
+    #[serde(default)]
+    pub runs: Vec<CiRun>,
 }
 
 impl Default for CiSection {
     fn default() -> Self {
-        Self { commands: Vec::new(), timeout_secs: default_timeout_secs(), mode: CiMode::default() }
+        Self {
+            commands: Vec::new(),
+            timeout_secs: default_timeout_secs(),
+            mode: CiMode::default(),
+            runs: Vec::new(),
+        }
     }
 }
 
@@ -78,16 +91,84 @@ pub enum Complexity {
     Xl,
 }
 
+/// A single CI run record written after each orchestrate pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CiRun {
+    pub pr: u64,
+    pub minutes: f64,
+    pub ts: DateTime<Utc>,
+}
+
+// ── [[tempo.prs]] ─────────────────────────────────────────────────────────────
+
+/// Size complexity label for a PR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum PrComplexity {
+    Xs,
+    S,
+    #[default]
+    M,
+    L,
+}
+
+/// A single per-PR record in `[[tempo.prs]]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TempoPr {
+    pub number: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phrase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chord: Option<String>,
+    #[serde(default)]
+    pub complexity: PrComplexity,
+    pub opened: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closed: Option<DateTime<Utc>>,
+    pub merged: bool,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct TempoSection {
+    #[serde(default)]
+    pub prs: Vec<TempoPr>,
+}
+
+// ── [orchestrate] ─────────────────────────────────────────────────────────────
+
 /// The `[orchestrate]` section of `.conductr`.
-#[derive(Debug, Deserialize, Default)]
+/// Combines #91's chord-size + pacing fields with #96's band/QA cap fields.
+#[derive(Debug, Deserialize)]
 pub struct OrchestrateSection {
-    /// Maximum number of parallel `agent<n>` slots.
-    pub max_parallel_beats: Option<u32>,
+    /// Maximum number of parallel `agent<n>` slots (chord size cap).
+    #[serde(default = "default_max_parallel_beats")]
+    pub max_parallel_beats: u32,
     /// Maximum number of parallel `qa<n>` slots.
+    #[serde(default)]
     pub max_parallel_qa: Option<u32>,
     /// Escalate to tmux at this complexity tier or above.
+    #[serde(default)]
     pub tmux_complexity_min: Option<Complexity>,
+    /// Reserved for future pacing rules; v1 always uses 0 (no overlap constraint).
+    #[serde(default)]
+    pub phrase_overlap: u32,
 }
+
+fn default_max_parallel_beats() -> u32 { 3 }
+
+impl Default for OrchestrateSection {
+    fn default() -> Self {
+        Self {
+            max_parallel_beats: default_max_parallel_beats(),
+            max_parallel_qa: None,
+            tmux_complexity_min: None,
+            phrase_overlap: 0,
+        }
+    }
+}
+
+// ── RawConfig ─────────────────────────────────────────────────────────────────
+
 
 #[derive(Debug, Deserialize, Default)]
 struct RawConfig {
@@ -101,6 +182,8 @@ struct RawConfig {
     pub band: BandSection,
     #[serde(default)]
     pub orchestrate: OrchestrateSection,
+    #[serde(default)]
+    pub tempo: TempoSection,
 }
 
 /// Read `project_tag` from `.conductr` in `repo_path`.
@@ -211,6 +294,8 @@ fn parse_url(url: &str) -> (String, String) {
     (owner_repo, tag)
 }
 
+// ── Public readers ────────────────────────────────────────────────────────────
+
 /// Read the `[local]` section from `.conductr` in `repo_path`.
 /// Returns defaults when the file or section is absent.
 pub fn read_local_section(repo_path: &Path) -> Result<LocalSection> {
@@ -227,6 +312,12 @@ pub fn read_ci_section(repo_path: &Path) -> Result<CiSection> {
 /// Returns defaults when the file or section is absent.
 pub fn read_band_section(repo_path: &Path) -> Result<BandSection> {
     read_raw(repo_path).map(|c| c.band)
+}
+
+/// Read the `[tempo]` section (including `[[tempo.prs]]`) from `.conductr`.
+/// Returns an empty section when the file or section is absent.
+pub fn read_tempo_section(repo_path: &Path) -> Result<TempoSection> {
+    read_raw(repo_path).map(|c| c.tempo)
 }
 
 /// Read the `[orchestrate]` section from `.conductr` in `repo_path`.
@@ -288,6 +379,7 @@ mode = "prefer-local"
         assert_eq!(cfg.ci.commands, ["cargo test", "cargo clippy"]);
         assert_eq!(cfg.ci.timeout_secs, 300);
         assert_eq!(cfg.ci.mode, CiMode::PreferLocal);
+        assert!(cfg.ci.runs.is_empty());
     }
 
     #[test]
@@ -297,6 +389,7 @@ mode = "prefer-local"
         assert!(cfg.ci.commands.is_empty());
         assert_eq!(cfg.ci.timeout_secs, 900);
         assert_eq!(cfg.ci.mode, CiMode::PreferLocal);
+        assert!(cfg.ci.runs.is_empty());
     }
 
     #[test]
@@ -380,26 +473,97 @@ architect = "gpt-4"
     // ── [orchestrate] ─────────────────────────────────────────────────────────
 
     #[test]
+    fn parses_ci_runs() {
+        let raw = r#"
+[ci]
+mode = "prefer-local"
+
+[[ci.runs]]
+pr = 21
+minutes = 4.2
+ts = "2026-05-01T14:35:00Z"
+
+[[ci.runs]]
+pr = 22
+minutes = 7.1
+ts = "2026-05-02T09:10:00Z"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.ci.runs.len(), 2);
+        assert_eq!(cfg.ci.runs[0].pr, 21);
+        assert!((cfg.ci.runs[0].minutes - 4.2).abs() < f64::EPSILON);
+        assert_eq!(cfg.ci.runs[1].pr, 22);
+    }
+
+    #[test]
+    fn parses_tempo_prs() {
+        let raw = r#"
+[[tempo.prs]]
+number     = 21
+phrase     = "begin"
+chord      = "begin-impl-1"
+complexity = "M"
+opened     = "2026-05-01T09:12:00Z"
+closed     = "2026-05-01T14:38:00Z"
+merged     = true
+
+[[tempo.prs]]
+number     = 22
+complexity = "S"
+opened     = "2026-05-02T08:00:00Z"
+merged     = false
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.tempo.prs.len(), 2);
+        let pr = &cfg.tempo.prs[0];
+        assert_eq!(pr.number, 21);
+        assert_eq!(pr.phrase.as_deref(), Some("begin"));
+        assert_eq!(pr.chord.as_deref(), Some("begin-impl-1"));
+        assert_eq!(pr.complexity, PrComplexity::M);
+        assert!(pr.merged);
+        assert!(pr.closed.is_some());
+
+        let pr2 = &cfg.tempo.prs[1];
+        assert_eq!(pr2.number, 22);
+        assert_eq!(pr2.complexity, PrComplexity::S);
+        assert!(!pr2.merged);
+        assert!(pr2.phrase.is_none());
+        assert!(pr2.closed.is_none());
+    }
+
+    #[test]
+    fn tempo_section_defaults_when_absent() {
+        let raw = r#"project_tag = "test""#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert!(cfg.tempo.prs.is_empty());
+    }
+
+    // ── [orchestrate] ─────────────────────────────────────────────────────────
+
+    #[test]
     fn orchestrate_section_parses_all_fields() {
         let raw = r#"
 [orchestrate]
-max_parallel_beats  = 3
+max_parallel_beats  = 5
 max_parallel_qa     = 2
 tmux_complexity_min = "L"
+phrase_overlap      = 1
 "#;
         let cfg: RawConfig = toml::from_str(raw).unwrap();
-        assert_eq!(cfg.orchestrate.max_parallel_beats, Some(3));
+        assert_eq!(cfg.orchestrate.max_parallel_beats, 5);
         assert_eq!(cfg.orchestrate.max_parallel_qa, Some(2));
         assert_eq!(cfg.orchestrate.tmux_complexity_min, Some(Complexity::L));
+        assert_eq!(cfg.orchestrate.phrase_overlap, 1);
     }
 
     #[test]
     fn orchestrate_section_defaults_when_absent() {
         let raw = r#"project_tag = "test""#;
         let cfg: RawConfig = toml::from_str(raw).unwrap();
-        assert!(cfg.orchestrate.max_parallel_beats.is_none());
+        assert_eq!(cfg.orchestrate.max_parallel_beats, 3);
         assert!(cfg.orchestrate.max_parallel_qa.is_none());
         assert!(cfg.orchestrate.tmux_complexity_min.is_none());
+        assert_eq!(cfg.orchestrate.phrase_overlap, 0);
     }
 
     #[test]
@@ -420,6 +584,18 @@ tmux_complexity_min = "huge"
 "#;
         let result: Result<RawConfig, _> = toml::from_str(raw);
         assert!(result.is_err(), "invalid complexity value should be rejected");
+    }
+
+    #[test]
+    fn complexity_defaults_to_m() {
+        let raw = r#"
+[[tempo.prs]]
+number = 99
+opened = "2026-05-01T00:00:00Z"
+merged = false
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.tempo.prs[0].complexity, PrComplexity::M);
     }
 
     // ── namespacing (project_tag / repo / parse_url) ──────────────────────────

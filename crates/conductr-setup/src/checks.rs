@@ -224,6 +224,80 @@ pub fn check_claude_workflow(repo: &Path) -> MaturityCheckResult {
     }
 }
 
+pub fn check_conductr_schema(repo: &Path) -> MaturityCheckResult {
+    let check = MaturityCheck::new(
+        "conductr-schema",
+        MaturityLevel::L5Orchestrated,
+        ".conductr parses cleanly against the v2 schema",
+        false,
+    );
+
+    let path = repo.join(".conductr");
+    if !path.exists() {
+        return fail(check, ".conductr not found");
+    }
+
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => return fail(check, format!("cannot read .conductr: {e}")),
+    };
+
+    let value: toml::Value = match toml::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => return fail(check, format!("TOML parse error: {e}")),
+    };
+
+    if let Some(err) = validate_tempo_prs(&value) {
+        return fail(check, err);
+    }
+    if let Some(err) = validate_ci_runs(&value) {
+        return fail(check, err);
+    }
+
+    pass(check)
+}
+
+fn validate_tempo_prs(value: &toml::Value) -> Option<String> {
+    let prs = value.get("tempo")?.get("prs")?.as_array()?;
+    for (i, pr) in prs.iter().enumerate() {
+        if pr.get("number").and_then(|n| n.as_integer()).is_none() {
+            return Some(format!("[[tempo.prs]][{i}]: `number` is missing or not an integer"));
+        }
+        if let Some(cx) = pr.get("complexity").and_then(|c| c.as_str()) {
+            if !matches!(cx, "XS" | "S" | "M" | "L") {
+                return Some(format!(
+                    "[[tempo.prs]][{i}]: `complexity` must be XS/S/M/L, got {cx:?}"
+                ));
+            }
+        }
+        if pr.get("opened").is_none() {
+            return Some(format!("[[tempo.prs]][{i}]: `opened` is missing"));
+        }
+        if pr.get("merged").and_then(|m| m.as_bool()).is_none() {
+            return Some(format!("[[tempo.prs]][{i}]: `merged` is missing or not a boolean"));
+        }
+    }
+    None
+}
+
+fn validate_ci_runs(value: &toml::Value) -> Option<String> {
+    let runs = value.get("ci")?.get("runs")?.as_array()?;
+    for (i, run) in runs.iter().enumerate() {
+        if run.get("pr").and_then(|p| p.as_integer()).is_none() {
+            return Some(format!("[[ci.runs]][{i}]: `pr` is missing or not an integer"));
+        }
+        let has_minutes = run.get("minutes").and_then(|m| m.as_float()).is_some()
+            || run.get("minutes").and_then(|m| m.as_integer()).is_some();
+        if !has_minutes {
+            return Some(format!("[[ci.runs]][{i}]: `minutes` is missing or not a number"));
+        }
+        if run.get("ts").is_none() {
+            return Some(format!("[[ci.runs]][{i}]: `ts` is missing"));
+        }
+    }
+    None
+}
+
 // ── Catalogue + bulk runner ───────────────────────────────────────────────────
 
 /// Run every check against `repo` and return results in level order.
@@ -241,5 +315,6 @@ pub fn run_all(repo: &Path) -> Vec<MaturityCheckResult> {
         check_claude_agents(repo),
         check_claude_app(repo),
         check_claude_workflow(repo),
+        check_conductr_schema(repo),
     ]
 }
