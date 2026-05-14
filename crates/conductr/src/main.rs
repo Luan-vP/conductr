@@ -1392,10 +1392,10 @@ enum ArchitectCmd {
     /// Opens or reuses the `conductr-architect` tmux session, starts Claude if
     /// needed, then sends `/architect review [<target>]`.
     Review(ArchitectReviewArgs),
-    /// Generate a mermaid dependency diagram of services and DI chains (Claude-required).
+    /// Generate a mermaid architecture diagram (Claude-required).
     ///
     /// Finds or spawns a QA pane (`conductr-<tag>-qa<n>`), starts Claude if needed,
-    /// then sends `/architect diagram [--repo-path <path>] [--output <file>] [--tier dependency]`.
+    /// then sends `/architect diagram [--repo-path <path>] [--output <file>] [--tier dependency|ports]`.
     Diagram(ArchitectDiagramArgs),
     /// Plan a batch of issues: infer phrases, estimate complexity, write ARNs.
     ///
@@ -1408,6 +1408,8 @@ enum ArchitectCmd {
 enum DiagramTier {
     /// Service dependency + DI chains (v1).
     Dependency,
+    /// Port traits + adapter implementations per service (v2).
+    Ports,
 }
 
 #[derive(Debug, Parser)]
@@ -1416,9 +1418,11 @@ struct ArchitectDiagramArgs {
     #[arg(long, default_value = ".")]
     repo_path: PathBuf,
     /// Output file for the generated diagram, relative to --repo-path.
-    #[arg(long, default_value = "docs/architecture/dependency-diagram.md")]
-    output: PathBuf,
-    /// Diagram tier to generate. v1 accepts only `dependency`.
+    /// Defaults to `docs/architecture/dependency-diagram.md` for `--tier dependency`
+    /// and `docs/architecture/ports-diagram.md` for `--tier ports`.
+    #[arg(long)]
+    output: Option<PathBuf>,
+    /// Diagram tier to generate: `dependency` (v1) or `ports` (v2).
     #[arg(long, value_enum, default_value = "dependency")]
     tier: DiagramTier,
     /// Working directory for the QA tmux session (defaults to current directory).
@@ -1853,9 +1857,14 @@ async fn run_architect_diagram(args: ArchitectDiagramArgs) -> Result<()> {
         .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
         .unwrap_or_else(|| ".".to_string());
 
+    let effective_output = args.output.clone().unwrap_or_else(|| match args.tier {
+        DiagramTier::Dependency => PathBuf::from("docs/architecture/dependency-diagram.md"),
+        DiagramTier::Ports => PathBuf::from("docs/architecture/ports-diagram.md"),
+    });
+
     let tag = derive_qa_tag(&args.repo_path);
     let max_qa = read_max_qa(&args.repo_path);
-    let skill_cmd = build_diagram_skill_cmd(&args.repo_path, &args.output, args.tier);
+    let skill_cmd = build_diagram_skill_cmd(&args.repo_path, &effective_output, args.tier);
     let claude_cmd = "claude --dangerously-skip-permissions";
 
     if args.dry_run {
@@ -1972,6 +1981,7 @@ fn build_diagram_skill_cmd(
 ) -> String {
     let tier_str = match tier {
         DiagramTier::Dependency => "dependency",
+        DiagramTier::Ports => "ports",
     };
     format!(
         "/architect diagram --repo-path {} --output {} --tier {}",
