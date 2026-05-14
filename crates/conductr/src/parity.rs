@@ -35,9 +35,12 @@ pub fn check_cli_skill_parity(ws: &Workspace) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     // Collect top-level CLI subcommands via clap introspection.
+    // Filter the auto-generated `help` subcommand — it has no matching skill and
+    // is not a real product command.
     let root_cmd = crate::Cli::command();
     let cli_subcmds: Vec<CliSubcmd> = root_cmd
         .get_subcommands()
+        .filter(|c| c.get_name() != "help")
         .map(CliSubcmd::from_clap)
         .collect();
 
@@ -69,31 +72,11 @@ pub fn check_cli_skill_parity(ws: &Workspace) -> Vec<Finding> {
         }
     }
 
-    // Drift 2: CLI subcommand without matching skill.
-    for cmd in &cli_subcmds {
-        if !skills.iter().any(|s| s.name == cmd.name) {
-            let fp = format!("parity/cli-without-skill/{}", cmd.name);
-            findings.push(Finding {
-                title: format!("parity: `conductr {}` has no matching skill", cmd.name),
-                body: format!(
-                    "## Finding\n\n\
-                     CLI–skill parity violated: `conductr {name}` is a registered \
-                     subcommand but `skills/{name}/SKILL.md` does not exist.\n\n\
-                     ## Acceptance criteria\n\n\
-                     - [ ] Create `skills/{name}/SKILL.md` with `name: {name}` in frontmatter \
-                     and a `cli:` field matching the clap invocation.\n\
-                     - [ ] `cargo test cli_skill_parity_is_clean` passes.\n\n\
-                     <!-- conductr-idle-fingerprint: {fp} -->",
-                    name = cmd.name,
-                    fp = fp,
-                ),
-                severity: FindingSeverity::Architecture,
-                fingerprint: fp,
-            });
-        }
-    }
+    // Parity is one-way (ADR §Problem 5): skills claim conformance to the CLI surface;
+    // the CLI does not reference skills. CLI subcommands without a skill are tracked via
+    // the skill map table in docs/cli-skill-parity.md, not as CI findings.
 
-    // Drifts 3–5: flag-level parity for matching pairs.
+    // Drifts 2–4: flag-level parity for matching pairs.
     for skill in &skills {
         let Some(cmd) = cli_subcmds.iter().find(|c| c.name == skill.name) else {
             continue; // already reported above
@@ -301,15 +284,16 @@ fn parse_skill_md(content: &str) -> Option<SkillInfo> {
             .map(|v| v.trim().to_string())
     });
 
-    let flags = extract_skill_flags(cli_field.as_deref(), body);
+    let flags = extract_skill_flags(cli_field.as_deref(), body, &name);
     Some(SkillInfo { name, flags })
 }
 
 /// Extract `--flag [<value>]` patterns from skill invocation lines.
 ///
-/// Sources: the `cli:` frontmatter field, plus any body line that contains
-/// `conductr ` (CLI invocation examples in the skill prose).
-fn extract_skill_flags(cli_field: Option<&str>, body: &str) -> Vec<SkillFlag> {
+/// Sources: the `cli:` frontmatter field, plus body lines that invoke
+/// `conductr {skill_name}` directly with flags (not sub-subcommands or
+/// cross-skill examples such as a crontab entry inside another skill's body).
+fn extract_skill_flags(cli_field: Option<&str>, body: &str, skill_name: &str) -> Vec<SkillFlag> {
     let mut flags: Vec<SkillFlag> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -317,9 +301,13 @@ fn extract_skill_flags(cli_field: Option<&str>, body: &str) -> Vec<SkillFlag> {
     if let Some(cli) = cli_field {
         sources.push(cli.to_string());
     }
+    // Only capture lines where `conductr {skill_name}` is followed immediately
+    // by a flag (with or without surrounding brackets), not a sub-subcommand word.
+    let direct = format!("conductr {} --", skill_name);
+    let bracketed = format!("conductr {} [--", skill_name);
     for line in body.lines() {
         let t = line.trim();
-        if t.contains("conductr ") {
+        if t.contains(&direct) || t.contains(&bracketed) {
             sources.push(t.to_string());
         }
     }
@@ -345,9 +333,11 @@ fn extract_skill_flags(cli_field: Option<&str>, body: &str) -> Vec<SkillFlag> {
             }
 
             // Infer type from what follows the flag name.
+            // `[--foo]` means another optional flag follows, not a value argument,
+            // so we must not treat the current flag as Value in that case.
             let after = src[name_end..].trim_start_matches('=').trim_start_matches(' ');
             let kind = if after.starts_with('<')
-                || (after.starts_with('[') && after.contains('<'))
+                || (after.starts_with('[') && after.contains('<') && !after.starts_with("[--"))
             {
                 FlagKind::Value
             } else {
