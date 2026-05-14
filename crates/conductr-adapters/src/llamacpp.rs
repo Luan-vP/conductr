@@ -118,11 +118,17 @@ impl LocalAgent for LlamaCpp {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    // Serialise env-var mutation across tests that share LLAMACPP_HOST.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn from_env_uses_default_host() {
-        // SAFETY: single-threaded test process; acceptable for env-var manipulation.
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: protected by ENV_LOCK; no other thread touches LLAMACPP_HOST.
         unsafe { std::env::remove_var("LLAMACPP_HOST") };
         let adapter = LlamaCpp::from_env();
         assert_eq!(adapter.host, DEFAULT_HOST);
@@ -136,7 +142,8 @@ mod tests {
 
     #[test]
     fn from_env_reads_custom_host() {
-        // SAFETY: single-threaded test process.
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: protected by ENV_LOCK; no other thread touches LLAMACPP_HOST.
         unsafe { std::env::set_var("LLAMACPP_HOST", "http://custom:1234") };
         let adapter = LlamaCpp::from_env();
         assert_eq!(adapter.host, "http://custom:1234");
