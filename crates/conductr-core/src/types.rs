@@ -251,6 +251,13 @@ pub struct OrchestratorConfig {
     /// How to resolve local vs GitHub CI status when a `LocalCi` adapter is
     /// attached. Ignored when no adapter is wired in.
     pub ci_mode: CiMode,
+    /// Maximum number of Ready issues to dispatch (trigger `@claude`) in a
+    /// single orchestrate pass. Corresponds to `[orchestrate] max_parallel_beats`
+    /// in `.conductr`. Default: 3.
+    pub max_parallel_beats: usize,
+    /// Path to the `.conductr` project config file. When set, the orchestrator
+    /// appends `[[tempo.prs]]` and `[[ci.runs]]` rows on PR close/merge.
+    pub conductr_config_path: Option<std::path::PathBuf>,
 }
 
 impl OrchestratorConfig {
@@ -263,8 +270,47 @@ impl OrchestratorConfig {
             default_human_assignee: None,
             dry_run: false,
             ci_mode: CiMode::PreferLocal,
+            max_parallel_beats: 3,
+            conductr_config_path: None,
         }
     }
+}
+
+// ── Closed PR (for tempo write-back) ─────────────────────────────────────────
+
+/// A PR that has been closed or merged. Returned by `ScmHost::list_closed_prs`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClosedPr {
+    pub number: PrNumber,
+    pub title: String,
+    pub body: String,
+    pub head_ref: String,
+    pub state: PrState,
+    pub linked_issue: Option<IssueNumber>,
+    pub opened_at: DateTime<Utc>,
+    pub closed_at: DateTime<Utc>,
+    pub merged: bool,
+}
+
+/// One row in `[[tempo.prs]]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TempoPrRow {
+    pub number: PrNumber,
+    pub title: String,
+    pub phrase: Option<String>,
+    pub chord: Option<String>,
+    pub complexity: Complexity,
+    pub opened: DateTime<Utc>,
+    pub closed: DateTime<Utc>,
+    pub merged: bool,
+}
+
+/// One row in `[[ci.runs]]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CiRunRow {
+    pub pr: PrNumber,
+    pub minutes: f64,
+    pub ts: DateTime<Utc>,
 }
 
 // ── local-ci types ────────────────────────────────────────────────────────────

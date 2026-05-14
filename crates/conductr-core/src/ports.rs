@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 pub use crate::types::{InstanceError, LocalAgentError, TmuxError};
 
 use crate::types::{
-    CalendarEvent, InstanceHandle, InstanceSpec, Issue, IssueNumber, LocalCiReport, MailKind,
-    MailMessage, MailRef, NewCalendarEvent, Pr, PrNumber, RepoSlug, Task, TmuxSession,
+    CalendarEvent, ClosedPr, InstanceHandle, InstanceSpec, Issue, IssueNumber, LocalCiReport,
+    MailKind, MailMessage, MailRef, NewCalendarEvent, Pr, PrNumber, RepoSlug, Task, TmuxSession,
     UpdateCalendarEvent,
 };
 
@@ -83,6 +83,43 @@ pub trait ScmHost: Send + Sync {
         body: &str,
         labels: &[&str],
     ) -> anyhow::Result<IssueNumber>;
+
+    /// Add a label to an issue. No-op by default (opt-in for adapters that
+    /// support GH label management).
+    async fn add_issue_label(
+        &self,
+        _repo: &RepoSlug,
+        _n: IssueNumber,
+        _label: &str,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Remove a label from an issue. No-op by default.
+    async fn remove_issue_label(
+        &self,
+        _repo: &RepoSlug,
+        _n: IssueNumber,
+        _label: &str,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Return the most recently closed or merged PRs (up to 100). Used by the
+    /// orchestrator to drive tempo write-back and stale-label cleanup.
+    async fn list_closed_prs(&self, _repo: &RepoSlug) -> anyhow::Result<Vec<ClosedPr>> {
+        Ok(vec![])
+    }
+
+    /// Return the wall-clock duration in minutes of the latest CI run on
+    /// `head_ref`, or `None` if no run exists.
+    async fn latest_ci_run_minutes(
+        &self,
+        _repo: &RepoSlug,
+        _head_ref: &str,
+    ) -> anyhow::Result<Option<f64>> {
+        Ok(None)
+    }
 }
 
 // ── TmuxAgent ─────────────────────────────────────────────────────────────────
