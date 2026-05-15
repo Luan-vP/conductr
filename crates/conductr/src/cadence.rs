@@ -848,7 +848,7 @@ fn update_readme_banner(
 
     let after_start = start_pos + README_TEMPO_START.len();
     let updated = format!(
-        "{}{}{}{}{}",
+        "{}{}{}{}",
         &content[..after_start],
         inner,
         README_TEMPO_END,
