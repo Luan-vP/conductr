@@ -16,6 +16,52 @@ state of all open issues and PRs, decides what can move forward, and does it.
    arrives, run it through the PR lifecycle. Re-classify after each merge —
    merging an issue often unblocks others.
 
+## Dispatch path (runner-aware)
+
+When the orchestrator decides to dispatch a Ready issue it reads the **runner**
+from the issue's labels (precedence: `runner:tmux` → `runner:web` → default `web`).
+
+```
+issue is Ready
+    │
+    ├─ runner = web  ──→  post @claude on the GitHub issue
+    │                     GH Actions Claude Code picks it up
+    │
+    └─ runner = tmux ──→  check agent<n> slot pool
+                              pool full (≥ max_parallel_beats)?
+                              │  yes → defer to next cycle
+                              │  no  → pick next free agent<n> slot
+                              │        add conductr:in-flight label (atomic)
+                              │        tmux new-session -d -s agent<n>
+                              │        send: claude --dangerously-skip-permissions
+                              │        send: /implementer --issue <n>
+```
+
+### Slot lifecycle
+
+| Slot pool  | Spawned when          | Freed when                          | Cap config         |
+| ---------- | --------------------- | ----------------------------------- | ------------------- |
+| `agent<n>` | Implementation beat   | PR opens (in-flight label removed)  | `max_parallel_beats` |
+| `qa<n>`    | PR opens (tmux issue) | PR closes / merges                  | `max_parallel_qa`    |
+| `conductr` | Pod init              | Never (orchestrate-only slot)       | —                    |
+
+The slot state machine is idempotent: if the orchestrator crashes mid-cycle the
+next pass reconciles by comparing live tmux state with GitHub state.
+
+### QA slot spawn
+
+When a PR opens for a tmux-runner issue, the orchestrator checks whether a
+`qa<n>` slot is available (`active_qa < max_parallel_qa`). If so it spawns a
+new `qa<n>` session and sends `/qa --pr <number>` to start the review/test
+skill.
+
+### Stale-pane reconciliation (idle sweep)
+
+The idle sweep calls `stale_agent_panes(sessions, in_flight_count)` to identify
+`agent<n>` sessions whose corresponding work has completed (PR opened and
+in-flight label was cleared). These sessions are killed before the next
+orchestrate pass so their slot indices are reclaimed.
+
 ## Timing
 
 | Event                         | Cadence    |

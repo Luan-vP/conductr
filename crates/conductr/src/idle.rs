@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Result;
+use conductr_core::types::TmuxSession;
 
 /// Ordered list of use-case crates for round-robin scanning.
 pub const USE_CASE_CRATES: &[&str] = &[
@@ -36,6 +37,43 @@ pub struct Finding {
     pub body: String,
     pub severity: FindingSeverity,
     pub fingerprint: String,
+}
+
+// ── Stale-pane reconciliation ─────────────────────────────────────────────────
+
+/// Names of `agent<n>` tmux sessions that are candidates for release during
+/// the idle sweep.
+///
+/// A pane is stale when the number of active agent sessions exceeds
+/// `in_flight_count` — the number of open issues that still carry the
+/// `conductr:in-flight` label (i.e. implementation is still ongoing).
+///
+/// The highest-indexed slots are freed first (LIFO).  Call this from the idle
+/// sweep to identify which sessions to `tmux kill-session` before the next
+/// orchestrate pass picks them up as false slots.
+pub fn stale_agent_panes(sessions: &[TmuxSession], in_flight_count: usize) -> Vec<String> {
+    let agent_prefix = "agent";
+    let mut agent_sessions: Vec<&TmuxSession> = sessions
+        .iter()
+        .filter(|s| {
+            s.name
+                .strip_prefix(agent_prefix)
+                .and_then(|n| n.parse::<usize>().ok())
+                .is_some()
+        })
+        .collect();
+
+    // Descending order so we free the highest-indexed (most-recently-spawned) first.
+    agent_sessions.sort_by(|a, b| b.name.cmp(&a.name));
+
+    let active_count = agent_sessions.len();
+    if active_count <= in_flight_count {
+        return Vec::new();
+    }
+    agent_sessions[..active_count - in_flight_count]
+        .iter()
+        .map(|s| s.name.clone())
+        .collect()
 }
 
 // ── Module round-robin ────────────────────────────────────────────────────────
@@ -307,6 +345,7 @@ pub(crate) fn severity_label(s: &FindingSeverity) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use conductr_core::types::TmuxSession;
 
     // ── pick_module ───────────────────────────────────────────────────────────
 
@@ -474,6 +513,57 @@ tokio = { version = "1", features = ["process", "rt"] }
         let line = r#"{"reason":"compiler-message","package_id":"x","manifest_path":"","target":{"kind":["lib"],"name":"x"},"message":{"level":"error","message":"mismatched types","code":{"code":"E0308","explanation":null},"rendered":"","spans":[],"children":[]}}"#;
         let findings = parse_clippy_output(line, "my-crate");
         assert!(findings.is_empty());
+    }
+
+    // ── stale_agent_panes ─────────────────────────────────────────────────────
+
+    fn make_tmux_session(name: &str) -> TmuxSession {
+        TmuxSession {
+            name: name.to_string(),
+            created: chrono::Utc::now(),
+            last_activity: chrono::Utc::now(),
+            windows: 1,
+            attached: false,
+            cwd: None,
+        }
+    }
+
+    #[test]
+    fn stale_agent_panes_empty_when_below_in_flight() {
+        let sessions = vec![make_tmux_session("agent1"), make_tmux_session("agent2")];
+        assert!(stale_agent_panes(&sessions, 2).is_empty());
+        assert!(stale_agent_panes(&sessions, 5).is_empty());
+    }
+
+    #[test]
+    fn stale_agent_panes_returns_excess() {
+        let sessions = vec![
+            make_tmux_session("agent1"),
+            make_tmux_session("agent2"),
+            make_tmux_session("agent3"),
+        ];
+        // 1 in-flight → 2 stale
+        let stale = stale_agent_panes(&sessions, 1);
+        assert_eq!(stale.len(), 2);
+    }
+
+    #[test]
+    fn stale_agent_panes_ignores_non_agent_sessions() {
+        let sessions = vec![
+            make_tmux_session("conductr"),
+            make_tmux_session("qa1"),
+            make_tmux_session("agent1"),
+        ];
+        // 0 in-flight → only agent1 is stale
+        let stale = stale_agent_panes(&sessions, 0);
+        assert_eq!(stale, vec!["agent1"]);
+    }
+
+    #[test]
+    fn stale_agent_panes_zero_in_flight_frees_all() {
+        let sessions = vec![make_tmux_session("agent2"), make_tmux_session("agent1")];
+        let stale = stale_agent_panes(&sessions, 0);
+        assert_eq!(stale.len(), 2);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

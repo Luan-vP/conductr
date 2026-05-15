@@ -1601,7 +1601,7 @@ async fn run_orchestrate(args: OrchestrateArgs) -> Result<()> {
         None
     } else {
         Some(std::sync::Arc::new(LocalCiAdapter::new(
-            repo_root,
+            repo_root.clone(),
             LocalCiConfig {
                 commands: ci_section.commands,
                 timeout_secs: ci_section.timeout_secs,
@@ -1610,13 +1610,21 @@ async fn run_orchestrate(args: OrchestrateArgs) -> Result<()> {
         )))
     };
 
+    // Read [orchestrate] section for cap and tmux config.
+    let orch_section = config::read_orchestrate_section(&repo_root)?;
+
     let mut cfg = OrchestratorConfig::new(RepoSlug::new(owner, repo));
     cfg.dry_run = args.dry_run;
     cfg.poll_interval = std::time::Duration::from_secs(args.poll_secs);
     cfg.default_human_assignee = args.human_assignee;
     cfg.ci_mode = ci_mode;
+    cfg.max_parallel_beats = orch_section.max_parallel_beats as usize;
+    cfg.max_parallel_qa = orch_section.max_parallel_qa.unwrap_or(2) as usize;
+    cfg.tmux_cwd = Some(repo_root.to_string_lossy().into_owned());
 
+    let tmux = std::sync::Arc::new(Tmux::new());
     let mut orch = Orchestrator::new(GhCli, cfg);
+    orch = orch.with_tmux(tmux);
     if let Some(lci) = local_ci {
         orch = orch.with_local_ci(lci);
     }
