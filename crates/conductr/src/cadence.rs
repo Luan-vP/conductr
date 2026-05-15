@@ -80,14 +80,25 @@ struct LocalSchedule {
 
 pub fn sync(repo_path: &Path, dry_run: bool, mechanism: Mechanism) -> Result<String> {
     let cfg = read_config(repo_path)?;
-    match mechanism {
+    let result = match mechanism {
         Mechanism::Crontab => {
             let log_dir = log_dir_default()?;
             let new_lines = generate_lines(&cfg, &log_dir);
             sync_crontab(repo_path, &cfg, &new_lines, &log_dir, dry_run)
         }
         Mechanism::Launchd => sync_launchd(repo_path, &cfg, dry_run),
+    }?;
+
+    if !dry_run {
+        if let Ok(tempo) = crate::config::read_tempo_section(repo_path) {
+            let profile = crate::tempo_profile::tempo_profile(&tempo.prs, Utc::now());
+            if let Err(e) = update_readme_banner(repo_path, &profile) {
+                eprintln!("warning: could not update README banner: {e}");
+            }
+        }
     }
+
+    Ok(result)
 }
 
 pub fn status(repo_path: &Path) -> Result<String> {
@@ -116,48 +127,52 @@ pub fn status(repo_path: &Path) -> Result<String> {
     if local.schedule.is_empty() {
         lines.push(String::new());
         lines.push("no schedules installed".to_string());
-        return Ok(lines.join("\n"));
-    }
-
-    for sched in &local.schedule {
-        lines.push(String::new());
-        let drift_tag = if let Some(cfg) = &cfg {
-            match cfg.cadence.get(&sched.task) {
-                Some(declared) if declared != &sched.cadence => {
-                    format!(
-                        " [DRIFT: declared '{}', installed '{}']",
-                        declared, sched.cadence
-                    )
+    } else {
+        for sched in &local.schedule {
+            lines.push(String::new());
+            let drift_tag = if let Some(cfg) = &cfg {
+                match cfg.cadence.get(&sched.task) {
+                    Some(declared) if declared != &sched.cadence => {
+                        format!(
+                            " [DRIFT: declared '{}', installed '{}']",
+                            declared, sched.cadence
+                        )
+                    }
+                    Some(_) => String::new(),
+                    None => " [ORPHAN: not in .conductr]".to_string(),
                 }
-                Some(_) => String::new(),
-                None => " [ORPHAN: not in .conductr]".to_string(),
-            }
-        } else {
-            String::new()
-        };
+            } else {
+                String::new()
+            };
 
-        lines.push(format!("  task:      {}", sched.task));
-        lines.push(format!("  mechanism: {}", sched.mechanism));
-        lines.push(format!("  cadence:   {}{drift_tag}", sched.cadence));
-        lines.push(format!("  installed: {}", sched.installed_at));
-        if let Some(label) = &sched.label {
-            lines.push(format!("  label:     {label}"));
+            lines.push(format!("  task:      {}", sched.task));
+            lines.push(format!("  mechanism: {}", sched.mechanism));
+            lines.push(format!("  cadence:   {}{drift_tag}", sched.cadence));
+            lines.push(format!("  installed: {}", sched.installed_at));
+            if let Some(label) = &sched.label {
+                lines.push(format!("  label:     {label}"));
+            }
+            if let Some(plist) = &sched.plist {
+                lines.push(format!("  plist:     {plist}"));
+            }
         }
-        if let Some(plist) = &sched.plist {
-            lines.push(format!("  plist:     {plist}"));
+
+        if let Some(cfg) = &cfg {
+            for task in cfg.cadence.keys() {
+                if !local.schedule.iter().any(|s| &s.task == task) {
+                    lines.push(String::new());
+                    lines.push(format!(
+                        "  [MISSING: '{task}' declared in .conductr but not installed \
+                         — run `conductr cadence sync`]"
+                    ));
+                }
+            }
         }
     }
 
-    if let Some(cfg) = &cfg {
-        for task in cfg.cadence.keys() {
-            if !local.schedule.iter().any(|s| &s.task == task) {
-                lines.push(String::new());
-                lines.push(format!(
-                    "  [MISSING: '{task}' declared in .conductr but not installed \
-                     — run `conductr cadence sync`]"
-                ));
-            }
-        }
+    if let Ok(tempo) = crate::config::read_tempo_section(repo_path) {
+        let profile = crate::tempo_profile::tempo_profile(&tempo.prs, Utc::now());
+        lines.push(crate::tempo_profile::format_status_lines(&profile));
     }
 
     Ok(lines.join("\n"))
@@ -170,7 +185,17 @@ pub fn status(repo_path: &Path) -> Result<String> {
 pub fn show(repo_path: &Path, at: Option<chrono::DateTime<Utc>>) -> Result<String> {
     let cfg = read_config(repo_path)?;
     let now = at.unwrap_or_else(Utc::now);
-    Ok(render_show(&cfg.cadence, now))
+    let mut out = render_show(&cfg.cadence, now);
+
+    if let Ok(tempo) = crate::config::read_tempo_section(repo_path) {
+        let profile = crate::tempo_profile::tempo_profile(&tempo.prs, now);
+        if let Some(line) = crate::tempo_profile::format_show_line(&profile) {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+
+    Ok(out)
 }
 
 /// Render every conductr cron entry from the active crontab as a 24-hour staff.
@@ -790,6 +815,49 @@ fn hostname() -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+const README_TEMPO_START: &str = "<!-- conductr-tempo-start -->";
+const README_TEMPO_END: &str = "<!-- conductr-tempo-end -->";
+
+/// Update the `<!-- conductr-tempo-start/end -->` block in `README.md`.
+///
+/// If the markers are absent the file is left unchanged; if present the
+/// content between them is replaced with the single-number maturity.
+fn update_readme_banner(
+    repo_path: &Path,
+    profile: &crate::tempo_profile::Profile,
+) -> Result<()> {
+    let readme_path = repo_path.join("README.md");
+    if !readme_path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&readme_path)
+        .with_context(|| format!("reading {}", readme_path.display()))?;
+
+    let (start_pos, end_pos) = match (content.find(README_TEMPO_START), content.find(README_TEMPO_END)) {
+        (Some(s), Some(e)) if s < e => (s, e),
+        _ => return Ok(()), // markers absent or malformed — leave file unchanged
+    };
+
+    let inner = match profile.maturity_secs {
+        Some(s) => format!("\n**maturity:** {}\n", crate::tempo_profile::format_duration(s)),
+        None => "\n".to_string(),
+    };
+
+    let after_start = start_pos + README_TEMPO_START.len();
+    let updated = format!(
+        "{}{}{}{}",
+        &content[..after_start],
+        inner,
+        README_TEMPO_END,
+        &content[end_pos + README_TEMPO_END.len()..],
+    );
+
+    std::fs::write(&readme_path, updated)
+        .with_context(|| format!("writing {}", readme_path.display()))?;
+    Ok(())
 }
 
 fn write_local_file(repo_path: &Path, local: &LocalFile) -> Result<()> {
