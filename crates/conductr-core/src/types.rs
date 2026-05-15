@@ -255,6 +255,13 @@ pub struct OrchestratorConfig {
     /// single orchestrate pass. Corresponds to `[orchestrate] max_parallel_beats`
     /// in `.conductr`. Default: 3.
     pub max_parallel_beats: usize,
+    /// Maximum number of parallel `qa<n>` tmux slots. When the pool is full,
+    /// new QA work is deferred. Corresponds to `[orchestrate] max_parallel_qa`.
+    /// Default: 2.
+    pub max_parallel_qa: usize,
+    /// Working directory for newly-spawned tmux agent/qa panes. When `None`
+    /// the orchestrator uses `"."` (the process cwd).
+    pub tmux_cwd: Option<String>,
     /// Path to the `.conductr` project config file. When set, the orchestrator
     /// appends `[[tempo.prs]]` and `[[ci.runs]]` rows on PR close/merge.
     pub conductr_config_path: Option<std::path::PathBuf>,
@@ -271,6 +278,8 @@ impl OrchestratorConfig {
             dry_run: false,
             ci_mode: CiMode::PreferLocal,
             max_parallel_beats: 3,
+            max_parallel_qa: 2,
+            tmux_cwd: None,
             conductr_config_path: None,
         }
     }

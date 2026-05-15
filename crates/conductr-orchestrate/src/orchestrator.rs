@@ -7,11 +7,12 @@ use tracing::{info, warn};
 
 use crate::architect::{complexity_for, phrase_id_from_title};
 use crate::classifier::{classify, Bucket, Classification};
+use crate::dispatch::{self, Runner, SlotKind};
 use crate::tempo;
 use crate::types::IssueNumber;
-use conductr_core::ports::{LocalCi, Mailbox, ScmHost};
+use conductr_core::ports::{LocalCi, Mailbox, ScmHost, TmuxAgent};
 use conductr_core::types::{
-    CiMode, CiRunRow, CiStatus, MailKind, PrLocalCiResult, PrState, TempoPrRow,
+    CiMode, CiRunRow, CiStatus, MailKind, PrLocalCiResult, PrState, TempoPrRow, TmuxSession,
 };
 
 pub use conductr_core::types::{CycleReport, OrchestratorConfig};
@@ -26,11 +27,12 @@ pub struct Orchestrator<C: ScmHost> {
     pub config: OrchestratorConfig,
     mailbox: Option<Arc<dyn Mailbox>>,
     local_ci: Option<Arc<dyn LocalCi>>,
+    tmux: Option<Arc<dyn TmuxAgent>>,
 }
 
 impl<C: ScmHost> Orchestrator<C> {
     pub fn new(client: C, config: OrchestratorConfig) -> Self {
-        Self { client, config, mailbox: None, local_ci: None }
+        Self { client, config, mailbox: None, local_ci: None, tmux: None }
     }
 
     /// Attach an optional mailbox for scope-dedup. When set, `run_cycle` will
@@ -45,6 +47,14 @@ impl<C: ScmHost> Orchestrator<C> {
     /// `config.ci_mode`.
     pub fn with_local_ci(mut self, local_ci: Arc<dyn LocalCi>) -> Self {
         self.local_ci = Some(local_ci);
+        self
+    }
+
+    /// Attach a tmux adapter. When set, issues labelled `runner:tmux` are
+    /// dispatched by spawning a local `agent<n>` pane instead of posting a
+    /// GitHub comment.
+    pub fn with_tmux(mut self, tmux: Arc<dyn TmuxAgent>) -> Self {
+        self.tmux = Some(tmux);
         self
     }
 
@@ -159,6 +169,17 @@ impl<C: ScmHost> Orchestrator<C> {
 
         let mut report = CycleReport { local_ci: local_ci_results, ..CycleReport::default() };
 
+        // ── Fetch tmux sessions for slot management (if tmux is attached). ─────
+        let tmux_sessions: Vec<TmuxSession> = if let Some(tmux) = &self.tmux {
+            tmux.list_sessions().await.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let mut agent_indices_in_use =
+            dispatch::active_slot_indices(&tmux_sessions, SlotKind::Agent);
+        let mut qa_indices_in_use =
+            dispatch::active_slot_indices(&tmux_sessions, SlotKind::Qa);
+
         // ── 1) Merge any PRs that are passing CI. ─────────────────────────────
         for c in &classifications {
             if c.bucket == Bucket::PrOpen {
@@ -179,6 +200,58 @@ impl<C: ScmHost> Orchestrator<C> {
             } else if c.bucket == Bucket::PrFailing {
                 if let Some(pr) = c.pr {
                     report.pr_failing.push(pr);
+                }
+            }
+        }
+
+        // ── 1a) Spawn qa<n> slots for open PRs linked to tmux-runner issues. ───
+        if let Some(tmux) = &self.tmux {
+            for pr in &prs {
+                if pr.state != PrState::Open {
+                    continue;
+                }
+                let Some(issue_num) = pr.linked_issue else { continue };
+                let Some(issue_obj) = open_issues.iter().find(|i| i.number == issue_num) else {
+                    continue
+                };
+                if dispatch::runner_for(issue_obj) != Runner::Tmux {
+                    continue;
+                }
+
+                let next_qa =
+                    (1..=self.config.max_parallel_qa).find(|n| !qa_indices_in_use.contains(n));
+                let Some(slot_idx) = next_qa else {
+                    info!(
+                        cap = self.config.max_parallel_qa,
+                        "max_parallel_qa reached; deferring qa slot spawn"
+                    );
+                    break;
+                };
+
+                let name = dispatch::slot_name(SlotKind::Qa, slot_idx);
+                let cwd = self.config.tmux_cwd.as_deref().unwrap_or(".");
+                if self.config.dry_run {
+                    info!(pr = pr.number, session = %name, "would spawn qa slot");
+                } else {
+                    match tmux.new_session(&name, cwd).await {
+                        Ok(()) => {
+                            let _ = tmux
+                                .send_line(&name, "claude --dangerously-skip-permissions")
+                                .await;
+                            let prompt = format!("/qa --pr {}", pr.number);
+                            if let Err(e) = tmux.send_line(&name, &prompt).await {
+                                warn!(session = %name, pr = pr.number, error = %e,
+                                      "failed to send qa prompt to tmux session");
+                            } else {
+                                info!(pr = pr.number, session = %name, "spawned qa slot");
+                                qa_indices_in_use.push(slot_idx);
+                            }
+                        }
+                        Err(e) => {
+                            warn!(session = %name, pr = pr.number, error = %e,
+                                  "failed to create qa tmux session");
+                        }
+                    }
                 }
             }
         }
@@ -234,46 +307,163 @@ impl<C: ScmHost> Orchestrator<C> {
                 }
             }
 
-            // (d) Chord size cap: skip (don't break) so remaining non-Ready
-            // issues still get reported correctly.
-            if dispatched_this_pass >= self.config.max_parallel_beats {
-                info!(
-                    cap = self.config.max_parallel_beats,
-                    "max_parallel_beats reached; deferring remaining Ready issues"
-                );
-                continue;
-            }
+            // (d) Determine runner and enforce the appropriate cap.
+            let issue_runner = open_issues
+                .iter()
+                .find(|i| i.number == c.issue)
+                .map(dispatch::runner_for)
+                .unwrap_or(Runner::Web);
 
-            if self.config.dry_run {
-                info!(issue = c.issue, "would trigger");
-            } else {
-                // (c) Atomic: add label first, then comment.
-                if let Err(e) = self
-                    .client
-                    .add_issue_label(repo, c.issue, IN_FLIGHT_LABEL)
-                    .await
-                {
-                    warn!(issue = c.issue, error = %e, "failed to add in-flight label; skipping dispatch");
-                    continue;
+            match issue_runner {
+                Runner::Web => {
+                    // Web cap: at most max_parallel_beats GH comments per pass.
+                    if dispatched_this_pass >= self.config.max_parallel_beats {
+                        info!(
+                            cap = self.config.max_parallel_beats,
+                            "max_parallel_beats reached; deferring remaining Ready issues"
+                        );
+                        continue;
+                    }
+
+                    if self.config.dry_run {
+                        info!(issue = c.issue, "would trigger (web)");
+                    } else {
+                        // (c) Atomic: add label first, then comment.
+                        if let Err(e) = self
+                            .client
+                            .add_issue_label(repo, c.issue, IN_FLIGHT_LABEL)
+                            .await
+                        {
+                            warn!(issue = c.issue, error = %e,
+                                  "failed to add in-flight label; skipping dispatch");
+                            continue;
+                        }
+                        match self
+                            .client
+                            .comment_issue(repo, c.issue, &self.config.trigger_comment)
+                            .await
+                        {
+                            Ok(_) => {
+                                info!(issue = c.issue, "triggered (web)");
+                                report.triggered.push(c.issue);
+                                report.progress_made = true;
+                                dispatched_this_pass += 1;
+                            }
+                            Err(e) => {
+                                warn!(issue = c.issue, error = %e,
+                                      "trigger failed; rolling back in-flight label");
+                                let _ = self
+                                    .client
+                                    .remove_issue_label(repo, c.issue, IN_FLIGHT_LABEL)
+                                    .await;
+                            }
+                        }
+                    }
                 }
 
-                match self
-                    .client
-                    .comment_issue(repo, c.issue, &self.config.trigger_comment)
-                    .await
-                {
-                    Ok(_) => {
-                        info!(issue = c.issue, "triggered");
-                        report.triggered.push(c.issue);
-                        report.progress_made = true;
-                        dispatched_this_pass += 1;
-                    }
-                    Err(e) => {
-                        warn!(issue = c.issue, error = %e, "trigger failed; rolling back in-flight label");
-                        let _ = self
+                Runner::Tmux => {
+                    // Tmux cap: slot pool bounded by max_parallel_beats.
+                    let next_agent = (1..=self.config.max_parallel_beats)
+                        .find(|n| !agent_indices_in_use.contains(n));
+                    let Some(slot_idx) = next_agent else {
+                        info!(
+                            cap = self.config.max_parallel_beats,
+                            "agent slot pool full; deferring tmux beat"
+                        );
+                        continue;
+                    };
+
+                    let session_name = dispatch::slot_name(SlotKind::Agent, slot_idx);
+
+                    if self.config.dry_run {
+                        info!(issue = c.issue, session = %session_name, "would trigger (tmux)");
+                    } else if let Some(tmux) = &self.tmux {
+                        // (c) Atomic: add label first, then spawn session.
+                        if let Err(e) = self
                             .client
-                            .remove_issue_label(repo, c.issue, IN_FLIGHT_LABEL)
-                            .await;
+                            .add_issue_label(repo, c.issue, IN_FLIGHT_LABEL)
+                            .await
+                        {
+                            warn!(issue = c.issue, error = %e,
+                                  "failed to add in-flight label; skipping tmux dispatch");
+                            continue;
+                        }
+                        let cwd = self.config.tmux_cwd.as_deref().unwrap_or(".");
+                        match tmux.new_session(&session_name, cwd).await {
+                            Ok(()) => {
+                                let _ = tmux
+                                    .send_line(
+                                        &session_name,
+                                        "claude --dangerously-skip-permissions",
+                                    )
+                                    .await;
+                                let prompt = format!(
+                                    "{} --issue {}",
+                                    self.config.trigger_comment, c.issue
+                                );
+                                match tmux.send_line(&session_name, &prompt).await {
+                                    Ok(()) => {
+                                        info!(issue = c.issue, session = %session_name,
+                                              "triggered (tmux)");
+                                        report.triggered.push(c.issue);
+                                        report.progress_made = true;
+                                        agent_indices_in_use.push(slot_idx);
+                                        dispatched_this_pass += 1;
+                                    }
+                                    Err(e) => {
+                                        warn!(issue = c.issue, session = %session_name,
+                                              error = %e, "failed to send implementer prompt");
+                                        let _ = self
+                                            .client
+                                            .remove_issue_label(repo, c.issue, IN_FLIGHT_LABEL)
+                                            .await;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!(issue = c.issue, session = %session_name, error = %e,
+                                      "failed to create agent tmux session");
+                                let _ = self
+                                    .client
+                                    .remove_issue_label(repo, c.issue, IN_FLIGHT_LABEL)
+                                    .await;
+                            }
+                        }
+                    } else {
+                        // No tmux adapter attached — fall back to web dispatch.
+                        warn!(issue = c.issue, "runner=tmux but no TmuxAgent attached; \
+                               falling back to web dispatch");
+                        if dispatched_this_pass >= self.config.max_parallel_beats {
+                            continue;
+                        }
+                        if let Err(e) = self
+                            .client
+                            .add_issue_label(repo, c.issue, IN_FLIGHT_LABEL)
+                            .await
+                        {
+                            warn!(issue = c.issue, error = %e,
+                                  "failed to add in-flight label; skipping dispatch");
+                            continue;
+                        }
+                        match self
+                            .client
+                            .comment_issue(repo, c.issue, &self.config.trigger_comment)
+                            .await
+                        {
+                            Ok(_) => {
+                                info!(issue = c.issue, "triggered (web fallback)");
+                                report.triggered.push(c.issue);
+                                report.progress_made = true;
+                                dispatched_this_pass += 1;
+                            }
+                            Err(e) => {
+                                warn!(issue = c.issue, error = %e, "trigger failed");
+                                let _ = self
+                                    .client
+                                    .remove_issue_label(repo, c.issue, IN_FLIGHT_LABEL)
+                                    .await;
+                            }
+                        }
                     }
                 }
             }

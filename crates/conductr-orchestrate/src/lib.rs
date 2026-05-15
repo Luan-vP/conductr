@@ -13,6 +13,7 @@
 pub mod architect;
 pub mod classifier;
 pub mod deps;
+pub mod dispatch;
 pub mod graph;
 pub mod orchestrator;
 pub mod tempo;
