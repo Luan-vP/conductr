@@ -92,18 +92,45 @@ One predicate, two consumers.
 fn check_cli_skill_parity(workspace: &Workspace) -> Vec<Finding>
 ```
 
-Located in `crates/conductr-orchestrate` (the workspace-analysis path). For
-each top-level CLI subcommand:
+Located in `crates/conductr/src/parity.rs` (binary crate, driving-adapter
+layer alongside `idle.rs`). Needs clap introspection (`Cli::command()`) and
+filesystem access, so it lives in the binary rather than a pure crate.
+
+`Workspace::open(path)` walks up from `path` to find the directory containing
+`skills/`, making it safe to call from tests where the CWD may be a sub-crate.
+
+For each top-level CLI subcommand:
 
 1. Check that `skills/<subcommand>/SKILL.md` exists.
 2. Check that the skill's frontmatter `name` matches the subcommand name.
-3. Parse flags documented in the skill. For each flag, verify it appears in
-   the clap definition for that subcommand with the same name, value type,
-   and description.
+3. Parse flags from the skill's `cli:` frontmatter field and body invocation
+   lines. For each flag, verify it appears in the clap definition for that
+   subcommand with the same name, value type, and description.
+
+Skills with multi-word `name:` values (e.g. `name: architect diagram`) map to
+sub-subcommands and are excluded from the top-level check.
 
 Each violation is a `Finding` with `Severity::Architecture` (no new severity
 variant). The finding body includes the subcommand name, the specific
-violation, and a suggested fix.
+violation, and acceptance criteria.
+
+### Fingerprint scheme
+
+Each finding carries a stable fingerprint embedded in the body as an HTML
+comment (`<!-- conductr-idle-fingerprint: <fp> -->`). The scheme:
+
+| Drift | Fingerprint pattern |
+|-------|---------------------|
+| Skill exists, no matching CLI subcommand | `parity/skill-without-cli/<skill>` |
+| CLI subcommand exists, no matching skill | `parity/cli-without-skill/<subcommand>` |
+| Skill invocation references flag clap doesn't expose | `parity/flag-extra/<skill>/<flag>` |
+| Flag exists in both but kind differs (bool vs value) | `parity/flag-type/<skill>/<flag>` |
+| Flag descriptions differ | `parity/flag-desc/<skill>/<flag>` |
+
+New drift categories slot in by adding a new prefix segment (e.g.
+`parity/sub-subcommand-extra/<skill>/<sub>`). The `parity/` namespace is
+reserved for CLI–skill parity findings; other idle predicates use different
+top-level namespaces (e.g. `arch/`, `clippy/`, `llm/`).
 
 ### Consumer 1 — CI test
 

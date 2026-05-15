@@ -4,6 +4,7 @@ mod cadence;
 mod config;
 mod idle;
 mod local_detect;
+mod parity;
 mod wiring;
 
 use std::path::PathBuf;
@@ -69,7 +70,7 @@ ___\|/_____|___|___________|_______________|_______________|_______________|__
     before_help = BANNER,
     arg_required_else_help = true
 )]
-struct Cli {
+pub(crate) struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -1737,9 +1738,37 @@ async fn run_architect_review(args: ArchitectReviewArgs) -> Result<()> {
     let session = "conductr-architect";
     let cwd = args
         .cwd
+        .as_deref()
         .map(|p| p.to_string_lossy().into_owned())
         .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
         .unwrap_or_else(|| ".".to_string());
+
+    // Workspace-wide mode: run the deterministic parity predicate before
+    // handing off to Claude, so findings are available regardless of whether
+    // the tmux session starts successfully.
+    if args.target.is_none() {
+        let repo_path = args.cwd.as_deref().map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        match parity::Workspace::open(&repo_path) {
+            Ok(ws) => {
+                let findings = parity::check_cli_skill_parity(&ws);
+                if findings.is_empty() {
+                    println!("architect: CLI–skill parity OK");
+                } else {
+                    for f in &findings {
+                        println!(
+                            "architect: [{}] {}",
+                            idle::severity_label(&f.severity),
+                            f.title
+                        );
+                    }
+                    println!("architect: {} parity finding(s)", findings.len());
+                }
+            }
+            Err(e) => eprintln!("architect: parity check skipped: {e}"),
+        }
+    }
 
     let skill_cmd = build_architect_review_prompt(args.target.as_deref());
     let claude_cmd = "claude --dangerously-skip-permissions";
