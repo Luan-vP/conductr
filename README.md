@@ -16,6 +16,9 @@
     .,;;''
 ```
 
+<!-- conductr-tempo-start -->
+<!-- conductr-tempo-end -->
+
 # conductr
 
 Scheduling and orchestration for agents and people.

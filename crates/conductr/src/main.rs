@@ -5,6 +5,7 @@ mod config;
 mod idle;
 mod local_detect;
 mod parity;
+mod tempo_profile;
 mod wiring;
 
 use std::path::PathBuf;
