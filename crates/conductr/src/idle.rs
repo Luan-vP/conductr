@@ -29,6 +29,7 @@ const IO_DENY_DEPS: &[&str] = &["reqwest", "hyper"];
 pub enum FindingSeverity {
     Architecture,
     Quality,
+    Coverage,
 }
 
 #[derive(Debug, Clone)]
@@ -331,12 +332,259 @@ pub fn parse_clippy_output(output: &str, crate_name: &str) -> Vec<Finding> {
     findings
 }
 
+// ── Coverage scan ─────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct LlvmCovReport {
+    data: Vec<LlvmCovData>,
+}
+
+#[derive(serde::Deserialize)]
+struct LlvmCovData {
+    files: Vec<LlvmCovFile>,
+}
+
+#[derive(serde::Deserialize)]
+struct LlvmCovFile {
+    filename: String,
+    segments: Vec<Vec<serde_json::Value>>,
+    summary: LlvmCovSummary,
+}
+
+#[derive(serde::Deserialize)]
+struct LlvmCovSummary {
+    lines: LlvmCovLines,
+}
+
+#[derive(serde::Deserialize)]
+struct LlvmCovLines {
+    count: u64,
+    covered: u64,
+    percent: f64,
+}
+
+/// Run `cargo llvm-cov --json -p <crate>` and parse findings.
+///
+/// Returns `Ok(vec![])` (with a logged warning) when `cargo llvm-cov` is not
+/// installed rather than propagating an error so the rest of the idle pass
+/// continues unaffected.
+pub async fn run_coverage_scan(
+    repo_path: &Path,
+    crate_name: &str,
+    threshold: f32,
+    exclude: &[String],
+) -> Result<Vec<Finding>> {
+    let result = tokio::process::Command::new("cargo")
+        .args(["llvm-cov", "--json", "-p", crate_name])
+        .current_dir(repo_path)
+        .output()
+        .await;
+
+    let output = match result {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::warn!("cargo-llvm-cov not installed; skipping coverage phase");
+            return Ok(Vec::new());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    // Exit 1 just means tests failed or nothing to measure — still parse JSON.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() {
+        tracing::warn!("cargo llvm-cov produced no output for {crate_name}");
+        return Ok(Vec::new());
+    }
+
+    Ok(parse_coverage_output(&stdout, crate_name, threshold, exclude))
+}
+
+pub fn parse_coverage_output(
+    json: &str,
+    crate_name: &str,
+    threshold: f32,
+    exclude: &[String],
+) -> Vec<Finding> {
+    let report: LlvmCovReport = match serde_json::from_str(json) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("failed to parse llvm-cov JSON: {e}");
+            return Vec::new();
+        }
+    };
+
+    let src_prefix = format!("/{crate_name}/src/");
+    let mut findings = Vec::new();
+
+    for data in &report.data {
+        for file in &data.files {
+            // Only files under <crate>/src/
+            let Some(rel_pos) = file.filename.find(&src_prefix) else { continue };
+            let rel_path = &file.filename[rel_pos + 1..]; // e.g. "conductr-foo/src/lib.rs"
+
+            // Strip to just "src/..." for glob matching
+            let src_rel = &rel_path[crate_name.len() + 1..]; // "src/lib.rs"
+
+            if glob_matches_any(src_rel, exclude) {
+                continue;
+            }
+
+            let pct = file.summary.lines.percent as f32 / 100.0;
+            if pct >= threshold {
+                continue;
+            }
+
+            let covered_pct = (pct * 100.0).round() as u64;
+            let threshold_pct = (threshold * 100.0).round() as u64;
+            let missing = file.summary.lines.count.saturating_sub(file.summary.lines.covered);
+
+            let ranges = uncovered_ranges(&file.segments);
+            let ranges_text = if ranges.is_empty() {
+                String::from("_(no detailed range data)_")
+            } else {
+                ranges
+                    .iter()
+                    .map(|(s, e)| {
+                        if s == e {
+                            format!("- line {s}")
+                        } else {
+                            format!("- lines {s}–{e}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+
+            let fp = format!("coverage/{crate_name}/{src_rel}");
+            findings.push(Finding {
+                title: format!(
+                    "coverage: `{crate_name}/{src_rel}`: {covered_pct}% below threshold \
+                     ({missing} uncovered lines)"
+                ),
+                body: format!(
+                    "## Finding\n\n\
+                     `{src_rel}` in `{crate_name}` has **{covered_pct}%** line coverage, \
+                     below the {threshold_pct}% threshold.\n\n\
+                     **Uncovered lines:** {missing} of {total}\n\n\
+                     ### Top uncovered ranges\n\n\
+                     {ranges_text}\n\n\
+                     ## Acceptance criteria\n\n\
+                     - [ ] Add tests so line coverage of `{src_rel}` reaches ≥ {threshold_pct}%.\n\
+                     - [ ] `cargo llvm-cov -p {crate_name}` reports ≥ {threshold_pct}% for this file.\n\n\
+                     <!-- conductr-idle-fingerprint: {fp} -->",
+                    total = file.summary.lines.count,
+                ),
+                severity: FindingSeverity::Coverage,
+                fingerprint: fp,
+            });
+        }
+    }
+
+    findings
+}
+
+/// Extract the top 5 uncovered line ranges from llvm-cov segment data.
+///
+/// Each segment is `[line, col, count, has_count, is_region_entry, is_gap_region]`.
+/// A region is uncovered when `has_count == true` and `count == 0`.
+fn uncovered_ranges(segments: &[Vec<serde_json::Value>]) -> Vec<(u64, u64)> {
+    let mut ranges: Vec<(u64, u64)> = Vec::new();
+    let mut uncov_start: Option<u64> = None;
+    let mut prev_line: u64 = 0;
+
+    for seg in segments {
+        if seg.len() < 4 {
+            continue;
+        }
+        let line = seg[0].as_u64().unwrap_or(0);
+        let count = seg[2].as_u64().unwrap_or(0);
+        let has_count = seg[3].as_bool().unwrap_or(false);
+        let is_uncovered = has_count && count == 0;
+
+        if is_uncovered && uncov_start.is_none() {
+            uncov_start = Some(line);
+        } else if !is_uncovered {
+            if let Some(start) = uncov_start.take() {
+                let end = if line > 0 { line - 1 } else { prev_line };
+                if end >= start {
+                    ranges.push((start, end));
+                }
+            }
+        }
+        prev_line = line;
+    }
+
+    if let Some(start) = uncov_start {
+        ranges.push((start, prev_line));
+    }
+
+    // Largest ranges first, then take top 5, then re-sort by start line.
+    ranges.sort_by(|a, b| (b.1 - b.0).cmp(&(a.1 - a.0)));
+    ranges.truncate(5);
+    ranges.sort_by_key(|r| r.0);
+    ranges
+}
+
+/// Match a relative path against a list of simple glob patterns.
+/// Supports `*` (any sequence of non-separator chars) and `**` (any path segment).
+fn glob_matches_any(path: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|p| glob_match(p, path))
+}
+
+fn glob_match(pattern: &str, path: &str) -> bool {
+    // Split pattern and path on '/' and match segment by segment.
+    // "**" matches zero or more path segments.
+    let pat_parts: Vec<&str> = pattern.split('/').collect();
+    let path_parts: Vec<&str> = path.split('/').collect();
+    glob_match_parts(&pat_parts, &path_parts)
+}
+
+fn glob_match_parts(pat: &[&str], path: &[&str]) -> bool {
+    match (pat.first(), path.first()) {
+        (None, None) => true,
+        (None, _) | (_, None) => {
+            // Allow trailing ** to match zero remaining segments
+            pat.first() == Some(&"**") && pat.len() == 1
+        }
+        (Some(&"**"), _) => {
+            // ** matches zero or more segments
+            glob_match_parts(&pat[1..], path)
+                || glob_match_parts(pat, &path[1..])
+        }
+        (Some(p), Some(s)) => {
+            segment_match(p, s) && glob_match_parts(&pat[1..], &path[1..])
+        }
+    }
+}
+
+fn segment_match(pattern: &str, segment: &str) -> bool {
+    // Match a single path segment against a pattern containing '*' wildcards.
+    let mut pat_chars = pattern.chars().peekable();
+    let seg_chars: Vec<char> = segment.chars().collect();
+    segment_match_inner(&mut pat_chars.collect::<Vec<_>>(), &seg_chars)
+}
+
+fn segment_match_inner(pat: &[char], seg: &[char]) -> bool {
+    match (pat.first(), seg.first()) {
+        (None, None) => true,
+        (None, _) => false,
+        (Some('*'), _) => {
+            // '*' matches zero or more chars in this segment
+            segment_match_inner(&pat[1..], seg)
+                || (!seg.is_empty() && segment_match_inner(pat, &seg[1..]))
+        }
+        (_, None) => false,
+        (Some(p), Some(s)) => p == s && segment_match_inner(&pat[1..], &seg[1..]),
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 pub(crate) fn severity_label(s: &FindingSeverity) -> &'static str {
     match s {
         FindingSeverity::Architecture => "architecture",
         FindingSeverity::Quality => "quality",
+        FindingSeverity::Coverage => "coverage",
     }
 }
 
@@ -564,6 +812,137 @@ tokio = { version = "1", features = ["process", "rt"] }
         let sessions = vec![make_tmux_session("agent2"), make_tmux_session("agent1")];
         let stale = stale_agent_panes(&sessions, 0);
         assert_eq!(stale.len(), 2);
+    }
+
+    // ── Coverage scan ─────────────────────────────────────────────────────────
+
+    fn make_llvm_cov_json(filename: &str, count: u64, covered: u64) -> String {
+        let percent = if count == 0 { 100.0 } else { covered as f64 / count as f64 * 100.0 };
+        format!(
+            r#"{{"data":[{{"files":[{{"filename":"{filename}","segments":[],"summary":{{"lines":{{"count":{count},"covered":{covered},"percent":{percent}}}}}}}]}}],"type":"llvm.coverage.json.export","version":"2.0.1"}}"#
+        )
+    }
+
+    #[test]
+    fn parse_coverage_empty_json() {
+        let json = r#"{"data":[],"type":"llvm.coverage.json.export","version":"2.0.1"}"#;
+        let findings = parse_coverage_output(json, "my-crate", 0.6, &[]);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn parse_coverage_file_above_threshold_not_flagged() {
+        let json = make_llvm_cov_json("/workspace/my-crate/src/lib.rs", 100, 80);
+        let findings = parse_coverage_output(&json, "my-crate", 0.6, &[]);
+        assert!(findings.is_empty(), "80% >= 60%, should not be flagged");
+    }
+
+    #[test]
+    fn parse_coverage_file_below_threshold_flagged() {
+        let json = make_llvm_cov_json("/workspace/my-crate/src/lib.rs", 100, 40);
+        let findings = parse_coverage_output(&json, "my-crate", 0.6, &[]);
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert!(f.title.contains("my-crate/src/lib.rs"));
+        assert!(f.title.contains("40%"));
+        assert_eq!(f.severity, FindingSeverity::Coverage);
+        assert!(f.fingerprint.starts_with("coverage/my-crate/src/lib.rs"));
+    }
+
+    #[test]
+    fn parse_coverage_exclude_glob_skips_file() {
+        let json = make_llvm_cov_json("/workspace/my-crate/src/main.rs", 50, 10);
+        let exclude = vec!["src/main.rs".to_string()];
+        let findings = parse_coverage_output(&json, "my-crate", 0.6, &exclude);
+        assert!(findings.is_empty(), "src/main.rs should be excluded");
+    }
+
+    #[test]
+    fn parse_coverage_wildcard_exclude() {
+        let json = make_llvm_cov_json("/workspace/my-crate/src/bin/foo.rs", 50, 10);
+        let exclude = vec!["src/bin/*.rs".to_string()];
+        let findings = parse_coverage_output(&json, "my-crate", 0.6, &exclude);
+        assert!(findings.is_empty(), "src/bin/*.rs should match src/bin/foo.rs");
+    }
+
+    #[test]
+    fn parse_coverage_empty_output() {
+        let findings = parse_coverage_output("", "my-crate", 0.6, &[]);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn parse_coverage_invalid_json() {
+        let findings = parse_coverage_output("{not valid json}", "my-crate", 0.6, &[]);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn parse_coverage_skips_non_src_files() {
+        // File outside src/ should be ignored
+        let json = make_llvm_cov_json("/workspace/my-crate/tests/integration.rs", 100, 0);
+        let findings = parse_coverage_output(&json, "my-crate", 0.6, &[]);
+        assert!(findings.is_empty(), "tests/ files should not be flagged");
+    }
+
+    #[test]
+    fn uncovered_ranges_empty_segments() {
+        let ranges = uncovered_ranges(&[]);
+        assert!(ranges.is_empty());
+    }
+
+    #[test]
+    fn uncovered_ranges_identifies_gap() {
+        // Segment format: [line, col, count, has_count, is_region_entry, is_gap_region]
+        let segments = vec![
+            vec![
+                serde_json::Value::Number(1u64.into()),
+                serde_json::Value::Number(1u64.into()),
+                serde_json::Value::Number(5u64.into()),
+                serde_json::Value::Bool(true),
+                serde_json::Value::Bool(true),
+                serde_json::Value::Bool(false),
+            ],
+            vec![
+                serde_json::Value::Number(5u64.into()),
+                serde_json::Value::Number(1u64.into()),
+                serde_json::Value::Number(0u64.into()),
+                serde_json::Value::Bool(true),
+                serde_json::Value::Bool(false),
+                serde_json::Value::Bool(false),
+            ],
+            vec![
+                serde_json::Value::Number(9u64.into()),
+                serde_json::Value::Number(1u64.into()),
+                serde_json::Value::Number(3u64.into()),
+                serde_json::Value::Bool(true),
+                serde_json::Value::Bool(true),
+                serde_json::Value::Bool(false),
+            ],
+        ];
+        let ranges = uncovered_ranges(&segments);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0], (5, 8));
+    }
+
+    #[test]
+    fn glob_match_exact() {
+        assert!(glob_match("src/lib.rs", "src/lib.rs"));
+        assert!(!glob_match("src/lib.rs", "src/main.rs"));
+    }
+
+    #[test]
+    fn glob_match_star_in_segment() {
+        assert!(glob_match("src/bin/*.rs", "src/bin/foo.rs"));
+        assert!(glob_match("src/bin/*.rs", "src/bin/bar.rs"));
+        assert!(!glob_match("src/bin/*.rs", "src/lib.rs"));
+    }
+
+    #[test]
+    fn glob_match_double_star() {
+        assert!(glob_match("src/**/*.rs", "src/nested/deep/mod.rs"));
+        assert!(glob_match("src/**", "src/lib.rs"));
+        assert!(glob_match("src/**", "src/a/b/c.rs"));
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

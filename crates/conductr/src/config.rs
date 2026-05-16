@@ -176,10 +176,29 @@ pub struct ArchitectureSection {
     pub reference: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct IdleSection {
     pub last_module: Option<String>,
     pub last_run: Option<String>,
+    /// Line-coverage fraction below which a file is flagged (0.0–1.0).
+    #[serde(default = "default_coverage_threshold")]
+    pub coverage_threshold: f32,
+    /// Glob patterns (relative to crate root) for files to skip in coverage scan.
+    #[serde(default)]
+    pub coverage_exclude: Vec<String>,
+}
+
+fn default_coverage_threshold() -> f32 { 0.6 }
+
+impl Default for IdleSection {
+    fn default() -> Self {
+        Self {
+            last_module: None,
+            last_run: None,
+            coverage_threshold: default_coverage_threshold(),
+            coverage_exclude: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]

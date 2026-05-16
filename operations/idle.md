@@ -20,7 +20,7 @@ passes. Same English word, different scope.
 
 ## What a pass does
 
-Each idle pass executes four phases in order. Failures in any phase are
+Each idle pass executes five phases in order. Failures in any phase are
 reported but don't abort later phases — partial output is still useful.
 
 ### 1. Read configuration
@@ -62,13 +62,42 @@ If the value is empty or unknown, start at the first crate.
 on the picked crate. Each clippy warning becomes a `Finding` with severity
 `Quality`, fingerprinted as `clippy/{crate}/{lint}/{file:line}`.
 
-### 4. File issues
+### 4. Module coverage scan
+
+For the same crate picked in phase 3, run:
+
+```
+cargo llvm-cov --json -p <crate>
+```
+
+If `cargo llvm-cov` is not installed, log a warning and skip; the rest of
+the pass continues unaffected.
+
+**Threshold.** Any source file in `<crate>/src/` whose line coverage is below
+`[idle] coverage_threshold` (default `0.6` = 60 %) is flagged as a `Finding`
+with severity `Coverage`, fingerprinted as `coverage/{crate}/{rel-path}`.
+
+**Exclusions.** Files matched by `[idle] coverage_exclude` glob patterns are
+skipped. Binary entry points and generated code are the common use case:
+
+```toml
+[idle]
+coverage_threshold = 0.6
+coverage_exclude   = ["src/main.rs", "src/bin/**"]
+```
+
+**Coverage is a separate phase from clippy** because `cargo llvm-cov`
+instruments and runs the full test suite — significantly slower than a
+compile-only clippy pass. Keeping them separate means clippy findings are
+still emitted even when `llvm-cov` is absent or slow.
+
+### 5. File issues
 
 For each `Finding` up to `--max-issues` (default 5):
 
 - Skip if an open issue with an identical title already exists.
 - Otherwise create via `ScmHost::create_issue` with labels
-  `idle-finding` + (`architecture` | `quality`).
+  `idle-finding` + (`architecture` | `quality` | `coverage`).
 - Embed the fingerprint as an HTML comment in the body
   (`<!-- conductr-idle-fingerprint: ... -->`) for future fingerprint-based
   dedup.
@@ -76,7 +105,7 @@ For each `Finding` up to `--max-issues` (default 5):
 Bodies include acceptance criteria so the next orchestrate pass can pick the
 issue up and act on it without further triage.
 
-After phase 4 succeeds, `[idle].last_module` advances to the next crate and
+After phase 5 succeeds, `[idle].last_module` advances to the next crate and
 `last_run` is set to the current timestamp.
 
 ## Invocation

@@ -84,9 +84,39 @@ create a `Finding`:
 
 Deduplicate by fingerprint within this run.
 
-### Phase 4 — File issues
+### Phase 4 — Module coverage scan
 
-Collect all findings from phases 2 and 3. For each finding (up to
+For the same crate picked in phase 3, run line-coverage analysis:
+
+```bash
+cargo llvm-cov --json -p <crate>
+```
+
+If `cargo llvm-cov` is not installed, log a warning and skip this phase — the
+rest of the pass continues unaffected.
+
+Parse the JSON output. For each file under `<crate>/src/`:
+
+- Skip files matched by `[idle] coverage_exclude` globs (default: empty).
+- Flag any file whose line coverage is below `[idle] coverage_threshold`
+  (default: `0.6` = 60%).
+- Create a `Finding` with:
+  - **Title**: `coverage: \`<crate>/<rel-path>\`: <pct>% below threshold (<n> uncovered lines)`
+  - **Severity**: `Coverage`
+  - **Fingerprint**: `coverage/<crate>/<rel-path>` — stable across runs for dedup
+  - **Body**: top 5 uncovered line ranges, current coverage %, threshold, and
+    acceptance criteria ("add tests so coverage ≥ \<threshold\>%")
+
+Example `.conductr` configuration:
+```toml
+[idle]
+coverage_threshold = 0.6
+coverage_exclude   = ["src/main.rs", "src/bin/**"]
+```
+
+### Phase 5 — File issues
+
+Collect all findings from phases 2, 3, and 4. For each finding (up to
 `--max-issues`, default 5):
 
 1. Check for an open issue with an identical title:
@@ -101,7 +131,7 @@ Collect all findings from phases 2 and 3. For each finding (up to
      --body "<body with fingerprint comment>" \
      --label "idle-finding,<severity-label>"
    ```
-   Labels: `idle-finding` + one of `architecture` or `quality`.
+   Labels: `idle-finding` + one of `architecture`, `quality`, or `coverage`.
 4. Embed the fingerprint as an HTML comment in the body:
    `<!-- conductr-idle-fingerprint: <fingerprint> -->`
 
@@ -110,11 +140,12 @@ Ensure the labels exist first:
 gh label create idle-finding --color d4c5f9 --description "Auto-filed by conductr idle" --force
 gh label create architecture  --color e4e669 --description "Architecture rule violation"  --force
 gh label create quality       --color bfd4f2 --description "Code quality finding"          --force
+gh label create coverage      --color 0075ca --description "Test coverage finding"         --force
 ```
 
-### Phase 5 — Persist state
+### Phase 6 — Persist state
 
-After phase 4 succeeds on a non-dry-run pass:
+After phase 5 succeeds on a non-dry-run pass:
 
 ```bash
 # Update [idle] block in .conductr
