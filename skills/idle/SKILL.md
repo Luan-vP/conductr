@@ -1,6 +1,6 @@
 ---
 name: idle
-description: Self-directed scan agent. Reads architecture config, delegates the full architectural audit to /architect review, runs cargo clippy on the next round-robin crate, and files findings as GitHub issues with stable fingerprints. Claude-required — the CLI bootstraps the tmux session and sends this skill.
+description: Self-directed scan agent. Reads architecture config, delegates the full architectural audit to /architect review, runs a security audit via /architect security-review, runs cargo clippy on the next round-robin crate (Rust repos only), and files findings as GitHub issues with stable fingerprints. Claude-required — the CLI bootstraps the tmux session and sends this skill.
 cli: conductr idle [--repo-path <path>] [--dry-run]
 tools: Read, Bash, WebFetch
 model: opus
@@ -8,7 +8,7 @@ model: opus
 
 # Idle Scan
 
-Run a self-directed maintenance pass: architecture audit + module clippy scan
+Run a self-directed maintenance pass: architecture audit + security audit + module clippy scan
 → file findings as GitHub issues.
 
 ## Invocation
@@ -49,14 +49,50 @@ conductr architect review
 ```
 
 This opens or reuses the `conductr-architect` session, starts Claude if
-needed, and runs `/architect review`. That skill checks all six hexagonal
-rules and `check_cli_skill_parity`. Findings flow back to phase 4.
+needed, and runs `/architect review`. That skill:
+- Loads the architectural pattern (Pattern + Rules + Arms) from `.claude/base.md`.
+- When `.claude/base.md` is absent or has no structured pattern sections, emits
+  a single finding proposing the hexagonal default template — no other checks run.
+- When the base file is present, checks all declared rules against the codebase.
+- Runs `check_cli_skill_parity` only when the repo has both a CLI and a `skills/`
+  surface (auto-detected); it is a no-op on repos that have neither.
 
-Do not duplicate any of the architect's checks here — the delegation is
-intentional. Wait for the architect session to return findings before
-proceeding.
+Findings flow back to phase 5. Do not duplicate any of the architect's checks
+here — the delegation is intentional. Wait for the architect session to return
+findings before proceeding.
+
+### Phase 2.5 — Security audit (delegated)
+
+Delegate to the architect skill's security-review mode:
+
+```bash
+conductr architect security-review
+```
+
+This reuses the `conductr-architect` session and runs `/architect security-review`.
+That skill performs a pure source-level scan for:
+- Hardcoded secrets in committed files
+- Vulnerable dependencies (`npm audit`, `cargo audit`, `pip-audit`, etc. — auto-detected from lockfiles)
+- Auth/AuthZ surface gaps
+- Input validation gaps
+- Logging hygiene (sensitive data at info+ level)
+- Common framework footguns (framework-aware; LLM judges relevance and severity)
+
+Each finding has severity `Security`, fingerprinted as `security/<category>/<file:line>`.
+Findings flow into phase 5 alongside architecture findings.
+
+If the `conductr-architect` session is busy after phase 2, skip phase 2.5 and
+proceed with phases 3–4.
 
 ### Phase 3 — Module pick + clippy scan
+
+**Rust-only phase.** Check for `Cargo.toml` at the repo root:
+
+```bash
+test -f Cargo.toml || { echo "idle: no Cargo.toml — skipping clippy phase"; exit 0; }
+```
+
+If `Cargo.toml` is absent, log one line and skip to phase 4. Do not error.
 
 **Pick the next crate.** Read `[idle].last_module` and advance one step in
 the round-robin list:
@@ -85,6 +121,14 @@ create a `Finding`:
 Deduplicate by fingerprint within this run.
 
 ### Phase 4 — Module coverage scan
+
+**Rust-only phase.** Check for `Cargo.toml` at the repo root:
+
+```bash
+test -f Cargo.toml || { echo "idle: no Cargo.toml — skipping coverage phase"; exit 0; }
+```
+
+If `Cargo.toml` is absent, log one line and skip to phase 5. Do not error.
 
 For the same crate picked in phase 3, run line-coverage analysis:
 
@@ -116,8 +160,17 @@ coverage_exclude   = ["src/main.rs", "src/bin/**"]
 
 ### Phase 5 — File issues
 
-Collect all findings from phases 2, 3, and 4. For each finding (up to
-`--max-issues`, default 5):
+Collect all findings from phases 2, 2.5, 3, and 4. Ensure the required labels exist:
+
+```bash
+gh label create idle-finding  --color d4c5f9 --description "Auto-filed by conductr idle"      --force
+gh label create architecture  --color e4e669 --description "Architecture rule violation"       --force
+gh label create quality       --color bfd4f2 --description "Code quality finding"              --force
+gh label create coverage      --color 0075ca --description "Test coverage finding"             --force
+gh label create security      --color e11d48 --description "Security finding"                  --force
+```
+
+For each finding (up to `--max-issues`, default 5):
 
 1. Check for an open issue with an identical title:
    ```bash
@@ -131,17 +184,9 @@ Collect all findings from phases 2, 3, and 4. For each finding (up to
      --body "<body with fingerprint comment>" \
      --label "idle-finding,<severity-label>"
    ```
-   Labels: `idle-finding` + one of `architecture`, `quality`, or `coverage`.
+   Labels: `idle-finding` + one of `architecture`, `quality`, `coverage`, or `security`.
 4. Embed the fingerprint as an HTML comment in the body:
    `<!-- conductr-idle-fingerprint: <fingerprint> -->`
-
-Ensure the labels exist first:
-```bash
-gh label create idle-finding --color d4c5f9 --description "Auto-filed by conductr idle" --force
-gh label create architecture  --color e4e669 --description "Architecture rule violation"  --force
-gh label create quality       --color bfd4f2 --description "Code quality finding"          --force
-gh label create coverage      --color 0075ca --description "Test coverage finding"         --force
-```
 
 ### Phase 6 — Persist state
 
@@ -149,7 +194,7 @@ After phase 5 succeeds on a non-dry-run pass:
 
 ```bash
 # Update [idle] block in .conductr
-last_module = "<crate scanned in phase 3>"
+last_module = "<crate scanned in phase 3, or unchanged if skipped>"
 last_run    = "<ISO-8601 timestamp>"
 ```
 
@@ -172,6 +217,9 @@ idle: <N> finding(s) total, <M> filed, module=<crate>
 - The `--dry-run` flag is passed through from the CLI; honour it in every
   phase that writes state or creates issues.
 - If `conductr architect review` is already running (session busy), skip
-  phase 2 and proceed with phases 3–4 using only clippy findings.
+  phase 2 and proceed with phases 2.5–4 using only clippy/coverage findings.
+- If `conductr architect security-review` is busy after phase 2, skip phase 2.5.
 - Phases are independent: a clippy failure does not block issue filing of
   architecture findings, and vice versa.
+- Phases 3 and 4 (clippy and coverage) are Rust-only. They skip gracefully when
+  `Cargo.toml` is absent — no error, one logged line.

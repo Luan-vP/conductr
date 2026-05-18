@@ -33,10 +33,18 @@ the disposition of each problem.
 > meaning in both adapters. The shared invocation string is the contract
 > between adapters; the surrounding prose is not.
 
-**Parity is universal.** Every top-level CLI subcommand has a corresponding
-`skills/<name>/SKILL.md`, and every skill that wraps a CLI command maps to
-exactly one top-level subcommand. The `cli_parity: true` opt-in originally
-proposed in #76 is obsolete — symmetry is unconditional for top-level commands.
+**Parity is universal within a repo that has both surfaces.** Every top-level
+CLI subcommand has a corresponding `skills/<name>/SKILL.md`, and every skill
+that wraps a CLI command maps to exactly one top-level subcommand. The
+`cli_parity: true` opt-in originally proposed in #76 is obsolete — symmetry is
+unconditional for top-level commands.
+
+**Agnostic-pattern rule.** The parity predicate runs only when the repo has
+**both** a CLI surface and a `skills/` directory. On repos that have neither
+(e.g. a pure TypeScript or Python library), the predicate is a no-op — not an
+error. Auto-detection: CLI surface = `Cargo.toml` with a binary target, or
+`package.json` with a `bin` field, or a `cli/` or `scripts/` directory.
+Skills surface = `skills/` directory at the repo root.
 
 ---
 
@@ -179,6 +187,15 @@ As of adoption, the mapping is:
 | `schedule`      | `skills/schedule/SKILL.md` (to be added) | Function-only  |
 | `run-task`      | `skills/run-task/SKILL.md` (to be added) | Function-only  |
 | `instance`      | `skills/instance/SKILL.md` (to be added) | Claude-required (when unblocked) |
+
+Sub-subcommands of `architect` (multi-word `name:`, excluded from top-level check):
+
+| CLI invocation                     | Skill section in `skills/architect/SKILL.md` | Flavor          |
+|------------------------------------|----------------------------------------------|-----------------|
+| `conductr architect review`        | `## Workspace-wide audit`                    | Claude-required |
+| `conductr architect plan`          | `## When invoked with \`plan <issues>\``     | Claude-required |
+| `conductr architect security-review` | `## Security Review`                       | Claude-required |
+| `conductr architect diagram`       | `skills/architecture-diagram/SKILL.md`       | Claude-required |
 
 **Migration note:** `skills/conductr-pod/SKILL.md` currently covers
 `diagnose`, `heal`, and `save-state` as a single omnibus skill. Under this

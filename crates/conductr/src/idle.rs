@@ -30,6 +30,7 @@ pub enum FindingSeverity {
     Architecture,
     Quality,
     Coverage,
+    Security,
 }
 
 #[derive(Debug, Clone)]
@@ -585,7 +586,88 @@ pub(crate) fn severity_label(s: &FindingSeverity) -> &'static str {
         FindingSeverity::Architecture => "architecture",
         FindingSeverity::Quality => "quality",
         FindingSeverity::Coverage => "coverage",
+        FindingSeverity::Security => "security",
     }
+}
+
+/// Returns `true` when `repo_path/Cargo.toml` exists, indicating a Rust workspace.
+///
+/// Used by the idle skill to skip Rust-only phases (clippy, llvm-cov) gracefully
+/// on non-Rust repos.
+pub fn has_cargo_toml(repo_path: &Path) -> bool {
+    repo_path.join("Cargo.toml").exists()
+}
+
+/// Check for `.claude/base.md` and return a finding when it is absent or
+/// contains no structured pattern sections (no `## ` headings).
+///
+/// The finding body embeds a hexagonal (ports & adapters) template as the
+/// recommended starting point — the conductr convention for greenfield repos.
+/// Authors override by writing their own Pattern + Rules sections.
+pub fn check_base_md(repo_path: &Path) -> Vec<Finding> {
+    let base_path = repo_path.join(".claude").join("base.md");
+
+    let needs_finding = match std::fs::read_to_string(&base_path) {
+        Err(_) => true,
+        Ok(content) => !content.lines().any(|l| l.starts_with("## ")),
+    };
+
+    if !needs_finding {
+        return vec![];
+    }
+
+    let fp = "arch/missing-base-md";
+    vec![Finding {
+        title: "arch: `.claude/base.md` missing or has no pattern declaration".to_string(),
+        body: format!(
+            "## Finding\n\n\
+             No `.claude/base.md` found (or the file has no structured pattern sections). \
+             Without this file the architect audit has no rules to check against — \
+             findings will be incomplete.\n\n\
+             **Default starting point:** hexagonal (ports & adapters) — the conductr \
+             convention for new repos. Edit the arms, folds, ports, and rules below to \
+             match your actual architecture.\n\n\
+             ### Suggested `.claude/base.md`\n\n\
+             # Architecture Base — `<repo-name>`\n\n\
+             Hexagonal (ports & adapters). Application logic lives in use-case modules\n\
+             that depend only on a shared core (types + ports). Concrete connectors\n\
+             (I/O, external APIs, databases) live behind adapters that implement port traits.\n\n\
+             ## Layout\n\n\
+             ```\n\
+                           ┌────────────────────────────────────┐\n\
+               driving     │  <entry-point> (binary / routes)   │\n\
+                           └─────────────────┬──────────────────┘\n\
+                                             ▼\n\
+                           ┌────────────────────────────────────┐\n\
+               use-cases   │  <domain crates / modules>         │\n\
+               (arms)      │                                    │\n\
+                           └─────────────────┬──────────────────┘\n\
+                                             ▼\n\
+                           ┌────────────────────────────────────┐\n\
+               core        │  <core crate / module>             │\n\
+                           │   ::types  (domain models)         │\n\
+                           │   ::ports  (trait surface)         │\n\
+                           └─────────────────┬──────────────────┘\n\
+                                             ▼\n\
+                           ┌────────────────────────────────────┐\n\
+               adapters    │  <adapters crate / module>         │\n\
+               (folds)     │   (database, HTTP, filesystem, …)  │\n\
+                           └────────────────────────────────────┘\n\
+             ```\n\n\
+             ## Rules\n\n\
+             1. **Use-case modules may not depend on adapters.** They depend on core only.\n\
+             2. **The entry point is the only place adapters are constructed and wired.**\n\
+             3. **Adapters never depend on use-case modules.**\n\
+             4. **Core has no I/O.** No subprocess, HTTP, filesystem beyond parsing.\n\
+             5. **One trait per port.** Adding a connector adds an adapter, not a new port.\n\n\
+             ## Acceptance criteria\n\n\
+             - [ ] Create `.claude/base.md` with the architectural pattern for this repository.\n\
+             - [ ] Run `/architect review` and confirm it emits pattern-specific findings.\n\n\
+             <!-- conductr-idle-fingerprint: {fp} -->"
+        ),
+        severity: FindingSeverity::Architecture,
+        fingerprint: fp.to_string(),
+    }]
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -943,6 +1025,60 @@ tokio = { version = "1", features = ["process", "rt"] }
         assert!(glob_match("src/**/*.rs", "src/nested/deep/mod.rs"));
         assert!(glob_match("src/**", "src/lib.rs"));
         assert!(glob_match("src/**", "src/a/b/c.rs"));
+    }
+
+    // ── has_cargo_toml ────────────────────────────────────────────────────────
+
+    #[test]
+    fn has_cargo_toml_true_when_file_exists() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]").unwrap();
+        assert!(has_cargo_toml(dir.path()));
+    }
+
+    #[test]
+    fn has_cargo_toml_false_when_absent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(!has_cargo_toml(dir.path()));
+    }
+
+    // ── check_base_md ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn check_base_md_emits_finding_when_file_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let findings = check_base_md(dir.path());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].fingerprint, "arch/missing-base-md");
+        assert_eq!(findings[0].severity, FindingSeverity::Architecture);
+        assert!(findings[0].body.contains("hexagonal"));
+        assert!(findings[0].body.contains("Hexagonal (ports & adapters)"));
+    }
+
+    #[test]
+    fn check_base_md_emits_finding_when_no_section_headings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude").join("base.md"),
+            "Just some prose with no headings.",
+        )
+        .unwrap();
+        let findings = check_base_md(dir.path());
+        assert_eq!(findings.len(), 1, "no ## headings → should emit finding");
+    }
+
+    #[test]
+    fn check_base_md_no_finding_when_structured() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude").join("base.md"),
+            "# Architecture Base\n\n## Rules\n\n1. Rule one.\n",
+        )
+        .unwrap();
+        let findings = check_base_md(dir.path());
+        assert!(findings.is_empty(), "structured base.md → no finding");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 ---
 name: architect
 description: Architecture oversight agent for multi-issue feature work. Analyzes a set of issues, maps dependencies, generates Architecture Reference Notes (ARNs) for each issue, and reviews PRs for architectural coherence. Use proactively before orchestrating batches of related issues.
-cli: conductr architect review [<target>] | conductr architect plan <issues>
+cli: conductr architect review [<target>] | conductr architect plan <issues> | conductr architect security-review
 tools: Read, Grep, Glob, Bash, WebFetch, Task
 model: opus
 ---
@@ -20,11 +20,13 @@ This skill is invoked in two equivalent ways:
 | CLI (spawns this session) | `conductr architect review [<target>]` |
 | Claude slash command | `/architect plan <issues>` |
 | CLI (spawns this session) | `conductr architect plan <issues>` |
+| Claude slash command | `/architect security-review` |
+| CLI (spawns this session) | `conductr architect security-review` |
 
-The CLI form opens or reuses the `conductr-architect` tmux session, starts Claude if needed, and sends the slash-command form above. Both forms must remain in sync (parity rule): any change to what `/architect review` or `/architect plan` accepts is a change to what the corresponding CLI subcommand accepts.
+The CLI form opens or reuses the `conductr-architect` tmux session, starts Claude if needed, and sends the slash-command form above. Both forms must remain in sync (parity rule): any change to what `/architect review`, `/architect plan`, or `/architect security-review` accepts is a change to what the corresponding CLI subcommand accepts.
 
 `<target>` is optional for `review`:
-- Omitted → workspace-wide architectural audit (all hexagonal rules, `check_cli_skill_parity`).
+- Omitted → workspace-wide architectural audit (loads pattern from `.claude/base.md`; runs `check_cli_skill_parity` when a `skills/` surface is present).
 - PR number (`123`) or issue number (`#123`) → targeted review of that PR or issue.
 
 `<issues>` for `plan` is a space-separated list of issue numbers (e.g. `42 43 44` or `#42 #43 #44`). At least one issue is required.
@@ -41,9 +43,108 @@ The CLI form opens or reuses the `conductr-architect` tmux session, starts Claud
 
 When invoked without a target, run a full workspace audit:
 
-1. **Check CLI/skill parity** — verify every `conductr <cmd>` has a corresponding `skills/<cmd>/SKILL.md` whose `cli:` frontmatter field matches the CLI signature, and vice-versa. Emit a `Finding` for each mismatch.
-2. **Apply hexagonal rules** from `.claude/base.md` — run all six rules against the workspace (rules 1–4 via cargo-dependency analysis; rules 5–6 via source-level grep). Each violation becomes a `Finding` with severity `Architecture`.
-3. **Emit findings** for the caller (e.g. `idle`) to file as issues.
+### Step 1 — Load pattern from `.claude/base.md`
+
+Read `.claude/base.md`. Extract:
+- **Pattern** — the architectural style declared in the intro prose (e.g. "Hexagonal (ports & adapters)", "Layered SPA", "Mobile/Expo monolith")
+- **Rules** — the numbered rule list under the `## Rules` section
+- **Arms** — the structural layers described in the `## Layout` or equivalent section
+
+Use these as the audit criteria for this run. The skill knows the *structure* of an audit (arms, connections, rules, findings); the *content* of the rules comes from the base file at runtime.
+
+**When `.claude/base.md` is absent or has no structured pattern sections:**
+
+Do not fail. Emit one finding and stop the audit:
+
+> **Title:** `arch: .claude/base.md missing or has no pattern declaration`
+> **Severity:** Architecture
+> **Body:** Explain that the audit cannot proceed without a declared pattern, and propose the hexagonal (ports & adapters) template as the recommended starting point — the conductr convention for greenfield repos. Embed the full hexagonal template so the author can copy-paste it and edit to taste.
+
+The hexagonal template to embed:
+
+```markdown
+# Architecture Base — `<repo-name>`
+
+Hexagonal (ports & adapters). Application logic lives in use-case modules
+that depend only on a shared core (types + ports). Concrete connectors
+(I/O, external APIs, databases) live behind adapters that implement port traits.
+
+## Layout
+
+```
+              ┌────────────────────────────────────┐
+  driving     │  <entry-point> (binary / routes)   │
+              └─────────────────┬──────────────────┘
+                                ▼
+              ┌────────────────────────────────────┐
+  use-cases   │  <domain crates / modules>         │
+  (arms)      │                                    │
+              └─────────────────┬──────────────────┘
+                                ▼
+              ┌────────────────────────────────────┐
+  core        │  <core crate / module>             │
+              │   ::types  (domain models)         │
+              │   ::ports  (trait surface)         │
+              └─────────────────┬──────────────────┘
+                                ▼
+              ┌────────────────────────────────────┐
+  adapters    │  <adapters crate / module>         │
+  (folds)     │   (database, HTTP, filesystem, …)  │
+              └────────────────────────────────────┘
+```
+
+## Rules
+
+1. **Use-case modules may not depend on adapters.** They depend on core only.
+2. **The entry point is the only place adapters are constructed and wired.**
+3. **Adapters never depend on use-case modules.**
+4. **Core has no I/O.** No subprocess, HTTP, filesystem beyond parsing.
+5. **One trait per port.** Adding a connector adds an adapter, not a new port.
+```
+
+### Step 2 — Apply pattern rules
+
+Read the codebase and check each rule from `.claude/base.md` against the actual structure:
+- For dependency-graph rules (e.g. "use-cases must not import adapters"): inspect `package.json`, `Cargo.toml`, `pyproject.toml`, or equivalent import graphs.
+- For structural rules (e.g. "one trait per port"): use source-level grep and file inspection.
+- Each violation becomes a `Finding` with severity `Architecture`, fingerprinted as `arch/rule<n>/<detail>`.
+
+### Step 3 — Check CLI/skill parity (conditional)
+
+Run `check_cli_skill_parity` **only** when the repo has **both** a CLI surface and a `skills/` directory. Auto-detect:
+- CLI surface present: `Cargo.toml` has a binary target, or `package.json` has a `bin` field, or a `cli/` or `scripts/` directory exists with executable entry points.
+- Skills surface present: `skills/` directory exists at the repo root.
+
+When either surface is absent, skip the parity check — it is a no-op, not an error. Emit a `Finding` for each mismatch when both surfaces are present.
+
+### Step 4 — Emit findings
+
+Emit all findings for the caller (e.g. `idle`) to file as issues.
+
+## Security Review (`/architect security-review`)
+
+When invoked as `security-review`, perform a pure source-level security audit. Do not run penetration tests, fuzzing, or dynamic analysis — this is a static review.
+
+Scan for:
+
+1. **Hardcoded secrets** — API keys, tokens, passwords, JWT secrets, private keys committed to source files (beyond `.gitignore`'d files). Look at what's actually in the git tree.
+2. **Dependency hygiene** — run the appropriate audit tool for the repo's ecosystem:
+   - `npm audit --json` (if `package-lock.json` or `yarn.lock` present)
+   - `cargo audit` (if `Cargo.lock` present)
+   - `pip-audit` or `safety check` (if `requirements.txt` or `Pipfile.lock` present)
+   Auto-detect from lockfile presence. Skip ecosystems not present in this repo.
+3. **Auth/AuthZ surface** — inspect middleware, route guards, session handling. Flag: missing CSRF protection, routes reading user data without auth middleware, unverified webhooks, missing rate limits on auth endpoints.
+4. **Input validation gaps** — surfaces receiving user input (forms, API routes, query params) without an evident validation or sanitisation layer.
+5. **Logging hygiene** — sensitive data (emails, tokens, full request bodies) logged at info+ level.
+6. **Common framework footguns** — framework-aware checks; apply judgment about what's relevant for this repo's stack. Examples: `dangerouslySetInnerHTML` without sanitisation, `eval`, Rust `unsafe` blocks without a `SAFETY:` comment, `pickle.loads` on untrusted input, raw SQL string concatenation.
+
+Each finding gets:
+- **Severity**: `Security`
+- **Fingerprint**: `security/<category>/<file:line>` (stable across runs for dedup)
+- **Title**: concise description of the issue
+- **Body**: location, what was found, why it's a concern, acceptance criteria
+
+Use LLM judgment to calibrate severity — flag real issues, not every `unsafe` block in a FFI wrapper that's clearly intentional. The finding body should include enough context for the implementing agent to understand what to fix.
 
 ## Architecture Reference Note (ARN) Convention
 
