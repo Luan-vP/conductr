@@ -1,0 +1,757 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>conductr — dashboard (mockup)</title>
+<style>
+  :root {
+    --panel: #1a1a1d;
+    --panel-edge: #0b0b0d;
+    --brushed: #2a2c30;
+    --brushed-2: #1f2125;
+    --screw: #6a6e74;
+    --label: #d8d8d4;
+    --label-dim: #888880;
+    --silk: #c9c9c2;
+    --accent: #ff7a18;
+    --led-on: #ff3b30;
+    --led-amber: #ffb020;
+    --led-green: #2ee36b;
+    --led-off: #2a1010;
+    --track: #0a0a0b;
+    --track-edge: #050506;
+    --cap: #d5d3cc;
+    --cap-stripe: #ff7a18;
+    --shadow: 0 6px 18px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.04);
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --font-silk: "Inter", "Helvetica Neue", Arial, sans-serif;
+  }
+
+  html, body { margin: 0; padding: 0; background: #0a0a0c; color: var(--label); font-family: var(--font-silk); }
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 16px;
+    background:
+      radial-gradient(1200px 600px at 50% -200px, #1a1a22, #0a0a0c 60%),
+      #0a0a0c;
+  }
+
+  .rack {
+    position: relative;
+    width: min(1180px, 100%);
+    border-radius: 14px;
+    padding: 28px 28px 24px;
+    background:
+      linear-gradient(180deg, #2a2c31 0%, #1a1b1f 14%, #18191c 86%, #0e0f12 100%),
+      var(--panel);
+    box-shadow: var(--shadow);
+    border: 1px solid #000;
+  }
+
+  .rack::before, .rack::after,
+  .rack > .screw-tl, .rack > .screw-tr, .rack > .screw-bl, .rack > .screw-br {
+    content: "";
+    position: absolute;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background:
+      radial-gradient(circle at 35% 30%, #c8ccd2 0%, #7a7f86 40%, #3a3d42 70%, #1b1d20 100%);
+    box-shadow: inset 0 0 2px rgba(0,0,0,.7), 0 1px 0 rgba(255,255,255,.04);
+  }
+  .rack > .screw-tl { top: 10px; left: 10px; }
+  .rack > .screw-tr { top: 10px; right: 10px; }
+  .rack > .screw-bl { bottom: 10px; left: 10px; }
+  .rack > .screw-br { bottom: 10px; right: 10px; }
+  .rack::before { display: none; }
+  .rack::after  { display: none; }
+
+  .brand {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 4px 10px 16px;
+    border-bottom: 1px solid #000;
+    margin-bottom: 18px;
+  }
+  .brand .name {
+    font-family: var(--font-silk);
+    font-weight: 800;
+    letter-spacing: .18em;
+    color: var(--silk);
+    font-size: 18px;
+    text-transform: uppercase;
+  }
+  .brand .name span { color: var(--accent); }
+  .brand .model {
+    font-family: var(--font-mono);
+    color: var(--label-dim);
+    font-size: 12px;
+    letter-spacing: .12em;
+  }
+
+  .console {
+    display: grid;
+    grid-template-columns: 220px 1fr 200px;
+    gap: 22px;
+  }
+
+  /* ── master section ───────────────────────────────────────────────── */
+  .master {
+    background:
+      repeating-linear-gradient(180deg, #25272b 0 2px, #1f2126 2px 4px);
+    border-radius: 10px;
+    padding: 18px 14px 16px;
+    border: 1px solid #000;
+    box-shadow: inset 0 0 0 1px #2c2f34;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+  .section-title {
+    font-family: var(--font-silk);
+    text-transform: uppercase;
+    letter-spacing: .22em;
+    font-size: 11px;
+    color: var(--silk);
+    background: #000;
+    padding: 4px 10px;
+    border-radius: 3px;
+    border: 1px solid #2a2c30;
+  }
+  .master .legend {
+    display: grid;
+    grid-template-columns: 1fr 14px 1fr;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: .08em;
+    color: var(--label-dim);
+    width: 100%;
+    margin-top: 4px;
+  }
+  .master .legend .top { text-align: right; color: #ff8a3a; }
+  .master .legend .bot { text-align: left; color: #6cb8ff; }
+  .master .legend .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin: 0 auto; }
+
+  /* big fader */
+  .fader-master {
+    position: relative;
+    height: 320px;
+    width: 80px;
+    background:
+      linear-gradient(180deg, #0a0a0b 0%, #050506 100%);
+    border-radius: 6px;
+    border: 1px solid #000;
+    box-shadow: inset 0 0 10px rgba(0,0,0,.8), inset 0 0 0 1px #1a1c20;
+    display: flex;
+    justify-content: center;
+  }
+  .fader-master .track {
+    position: absolute;
+    top: 14px; bottom: 14px;
+    width: 6px;
+    background:
+      linear-gradient(180deg, #ff3b30 0%, #ffb020 28%, #2ee36b 50%, #6cb8ff 78%, #4d6ee0 100%);
+    border-radius: 3px;
+    box-shadow: inset 0 0 2px #000, 0 0 8px rgba(255,122,24,.18);
+  }
+  .fader-master .ticks {
+    position: absolute;
+    top: 14px; bottom: 14px;
+    left: 8px; right: 8px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    pointer-events: none;
+  }
+  .fader-master .ticks .tick {
+    height: 1px;
+    background: #2a2c30;
+  }
+  .fader-master .labels {
+    position: absolute;
+    top: 14px; bottom: 14px;
+    left: calc(100% + 8px);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: .14em;
+    color: var(--label-dim);
+    white-space: nowrap;
+  }
+  .fader-master .labels .lvl { color: var(--label); }
+  .fader-master .cap {
+    position: absolute;
+    left: 50%;
+    width: 60px;
+    height: 28px;
+    transform: translate(-50%, -50%);
+    top: 50%; /* JS would set this — mockup is static */
+    background:
+      linear-gradient(180deg, #f5f3ec 0%, #d6d3c8 38%, #b9b6a8 60%, #8c897e 100%);
+    border-radius: 4px;
+    box-shadow:
+      0 6px 10px rgba(0,0,0,.6),
+      inset 0 1px 0 rgba(255,255,255,.7),
+      inset 0 -2px 0 rgba(0,0,0,.25);
+    border: 1px solid #2c2c2c;
+    cursor: ns-resize;
+  }
+  .fader-master .cap::before {
+    content: "";
+    position: absolute;
+    left: 6px; right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    height: 4px;
+    background: var(--accent);
+    box-shadow: 0 0 6px rgba(255,122,24,.6);
+    border-radius: 2px;
+  }
+
+  .master .readout {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    background: #050506;
+    border: 1px solid #000;
+    color: #2ee36b;
+    padding: 6px 8px;
+    border-radius: 3px;
+    box-shadow: inset 0 0 8px rgba(46,227,107,.18);
+    text-shadow: 0 0 6px rgba(46,227,107,.7);
+    letter-spacing: .12em;
+    width: 100%;
+    text-align: center;
+  }
+
+  /* ── channel strips ───────────────────────────────────────────────── */
+  .strips {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    background:
+      repeating-linear-gradient(180deg, #25272b 0 2px, #1f2126 2px 4px);
+    border-radius: 10px;
+    padding: 18px 14px 16px;
+    border: 1px solid #000;
+    box-shadow: inset 0 0 0 1px #2c2f34;
+  }
+
+  .strip {
+    background:
+      linear-gradient(180deg, #1d1f23 0%, #16181b 100%);
+    border-radius: 8px;
+    border: 1px solid #000;
+    box-shadow: inset 0 0 0 1px #2a2c30, 0 1px 0 rgba(255,255,255,.03);
+    padding: 12px 10px 14px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .strip .channel-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: .18em;
+    color: var(--silk);
+    text-transform: uppercase;
+    background: #050506;
+    border: 1px solid #000;
+    border-radius: 3px;
+    padding: 4px 8px;
+    box-shadow: inset 0 0 6px rgba(0,0,0,.6);
+    width: 100%;
+    text-align: center;
+  }
+
+  .strip .led-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    width: 100%;
+    align-items: center;
+  }
+  .led {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: .1em;
+    color: var(--label-dim);
+    text-transform: uppercase;
+  }
+  .led .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--led-off);
+    box-shadow: inset 0 0 2px #000;
+  }
+  .led.on .dot { background: var(--led-green); box-shadow: 0 0 6px var(--led-green), inset 0 0 2px rgba(0,0,0,.4); }
+  .led.amber.on .dot { background: var(--led-amber); box-shadow: 0 0 6px var(--led-amber), inset 0 0 2px rgba(0,0,0,.4); }
+  .led.red.on .dot { background: var(--led-on); box-shadow: 0 0 6px var(--led-on), inset 0 0 2px rgba(0,0,0,.4); }
+
+  /* mini fader per channel */
+  .fader-mini {
+    position: relative;
+    height: 180px;
+    width: 56px;
+    background:
+      linear-gradient(180deg, #0a0a0b 0%, #050506 100%);
+    border-radius: 5px;
+    border: 1px solid #000;
+    box-shadow: inset 0 0 8px rgba(0,0,0,.8), inset 0 0 0 1px #1a1c20;
+  }
+  .fader-mini .track {
+    position: absolute;
+    top: 10px; bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 4px;
+    background:
+      linear-gradient(180deg, #ff3b30 0%, #ffb020 30%, #2ee36b 55%, #6cb8ff 100%);
+    border-radius: 2px;
+    box-shadow: inset 0 0 2px #000;
+  }
+  .fader-mini .ticks {
+    position: absolute;
+    top: 10px; bottom: 10px;
+    left: 6px; right: 6px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    pointer-events: none;
+  }
+  .fader-mini .ticks .tick { height: 1px; background: #2a2c30; }
+  .fader-mini .cap {
+    position: absolute;
+    left: 50%;
+    width: 42px; height: 18px;
+    transform: translate(-50%, -50%);
+    background:
+      linear-gradient(180deg, #f5f3ec 0%, #d6d3c8 38%, #b9b6a8 60%, #8c897e 100%);
+    border-radius: 3px;
+    box-shadow:
+      0 4px 6px rgba(0,0,0,.55),
+      inset 0 1px 0 rgba(255,255,255,.7),
+      inset 0 -2px 0 rgba(0,0,0,.25);
+    border: 1px solid #2c2c2c;
+    cursor: ns-resize;
+  }
+  .fader-mini .cap::before {
+    content: "";
+    position: absolute;
+    left: 5px; right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    height: 3px;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+
+  /* On/off toggle */
+  .toggle {
+    --on: var(--led-green);
+    width: 64px;
+    height: 28px;
+    background:
+      linear-gradient(180deg, #0a0a0b 0%, #050506 100%);
+    border: 1px solid #000;
+    border-radius: 4px;
+    position: relative;
+    cursor: pointer;
+    box-shadow: inset 0 0 8px rgba(0,0,0,.7), inset 0 0 0 1px #1a1c20;
+  }
+  .toggle .knob {
+    position: absolute;
+    top: 3px; left: 3px;
+    width: 26px; height: 20px;
+    background: linear-gradient(180deg, #f5f3ec 0%, #b9b6a8 60%, #8c897e 100%);
+    border-radius: 3px;
+    border: 1px solid #2c2c2c;
+    box-shadow: 0 3px 6px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.7);
+    transition: left .15s ease;
+  }
+  .toggle.on .knob { left: 35px; }
+  .toggle .ind {
+    position: absolute;
+    top: 50%; transform: translateY(-50%);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: .15em;
+    color: var(--label-dim);
+  }
+  .toggle .ind.off { left: 38px; }
+  .toggle .ind.on  { left: 8px; }
+  .toggle.on .ind.off { color: var(--label-dim); }
+  .toggle.on .ind.on  { color: var(--led-green); }
+
+  .strip .small-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: .14em;
+    color: var(--label-dim);
+    text-transform: uppercase;
+  }
+
+  /* tape strip with channel cron / status */
+  .lcd {
+    width: 100%;
+    background: #08120a;
+    border: 1px solid #000;
+    box-shadow: inset 0 0 8px rgba(0,0,0,.7);
+    color: #6dffb0;
+    text-shadow: 0 0 6px rgba(46,227,107,.7);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: .08em;
+    padding: 6px 8px;
+    border-radius: 3px;
+    text-align: center;
+  }
+
+  /* ── right column: presets + global controls ──────────────────────── */
+  .right {
+    background:
+      repeating-linear-gradient(180deg, #25272b 0 2px, #1f2126 2px 4px);
+    border-radius: 10px;
+    padding: 18px 14px 16px;
+    border: 1px solid #000;
+    box-shadow: inset 0 0 0 1px #2c2f34;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .presets {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    width: 100%;
+  }
+  .preset {
+    background:
+      linear-gradient(180deg, #2a2c30 0%, #16181b 100%);
+    border: 1px solid #000;
+    border-radius: 4px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 2px 4px rgba(0,0,0,.55);
+    color: var(--silk);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    padding: 10px 6px;
+    text-align: center;
+    cursor: pointer;
+    position: relative;
+  }
+  .preset .num {
+    position: absolute;
+    top: 4px; left: 6px;
+    font-size: 8px;
+    color: var(--label-dim);
+  }
+  .preset.active {
+    color: #fff;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.08),
+      inset 0 0 0 1px var(--accent),
+      0 0 8px rgba(255,122,24,.35),
+      0 2px 4px rgba(0,0,0,.55);
+  }
+  .preset.active::after {
+    content: "";
+    position: absolute;
+    right: 6px; top: 6px;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
+  }
+
+  .right .group {
+    border-top: 1px dashed #2c2f34;
+    padding-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .right .group h4 {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: .14em;
+    color: var(--label-dim);
+    text-transform: uppercase;
+  }
+
+  .knob {
+    width: 60px; height: 60px;
+    border-radius: 50%;
+    background:
+      radial-gradient(circle at 30% 25%, #4a4d52 0%, #2a2d31 45%, #15171a 100%);
+    border: 1px solid #000;
+    box-shadow:
+      0 4px 8px rgba(0,0,0,.6),
+      inset 0 1px 0 rgba(255,255,255,.06);
+    position: relative;
+    margin: 0 auto;
+  }
+  .knob .pointer {
+    position: absolute;
+    top: 6px; left: 50%;
+    width: 2px; height: 16px;
+    background: var(--accent);
+    box-shadow: 0 0 4px rgba(255,122,24,.7);
+    transform: translateX(-50%);
+    border-radius: 1px;
+  }
+
+  .meter-row { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+  .meter {
+    flex: 1;
+    height: 8px;
+    background: #050506;
+    border: 1px solid #000;
+    border-radius: 2px;
+    overflow: hidden;
+    position: relative;
+  }
+  .meter::after {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: var(--w, 60%);
+    background: linear-gradient(90deg, #2ee36b 0%, #ffb020 70%, #ff3b30 100%);
+  }
+  .meter-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: .14em;
+    color: var(--label-dim);
+    width: 48px;
+  }
+
+  .footer {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid #000;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--label-dim);
+    letter-spacing: .1em;
+  }
+  .footer .stamp { color: var(--label-dim); }
+  .footer .note  { color: var(--accent); }
+
+  @media (max-width: 920px) {
+    .console { grid-template-columns: 1fr; }
+    .strips { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<div class="rack">
+  <span class="screw-tl"></span><span class="screw-tr"></span>
+  <span class="screw-bl"></span><span class="screw-br"></span>
+
+  <div class="brand">
+    <div class="name">conduct<span>r</span> · console</div>
+    <div class="model">MK-I  ·  MOCKUP  ·  no wiring</div>
+  </div>
+
+  <div class="console">
+
+    <!-- ── MASTER ────────────────────────────────────────────────── -->
+    <section class="master" aria-label="master safety">
+      <div class="section-title">Safety</div>
+
+      <div class="fader-master" role="slider" aria-label="safety level">
+        <div class="track"></div>
+        <div class="ticks">
+          <div class="tick"></div><div class="tick"></div><div class="tick"></div>
+          <div class="tick"></div><div class="tick"></div>
+          <div class="tick"></div><div class="tick"></div>
+        </div>
+        <div class="labels">
+          <div>UNHINGED</div>
+          <div>FERAL</div>
+          <div>LOOSE</div>
+          <div class="lvl">BALANCED</div>
+          <div>CAREFUL</div>
+          <div>STRICT</div>
+          <div>BUREAUCRATIC</div>
+        </div>
+        <div class="cap" title="drag — mockup"></div>
+      </div>
+
+      <div class="legend">
+        <div class="top">↑ ship</div>
+        <div class="dot"></div>
+        <div class="bot">↓ guard</div>
+      </div>
+
+      <div class="readout">LVL · BALANCED</div>
+    </section>
+
+    <!-- ── CHANNEL STRIPS ────────────────────────────────────────── -->
+    <section class="strips" aria-label="routines">
+
+      <!-- orchestrate -->
+      <div class="strip">
+        <div class="channel-label">orchestrate</div>
+        <div class="led-row">
+          <div class="led on"><span class="dot"></span>arm</div>
+          <div class="led amber on"><span class="dot"></span>poll</div>
+        </div>
+        <div class="fader-mini">
+          <div class="track"></div>
+          <div class="ticks">
+            <div class="tick"></div><div class="tick"></div><div class="tick"></div>
+            <div class="tick"></div><div class="tick"></div>
+          </div>
+          <div class="cap" style="top: 38%"></div>
+        </div>
+        <div class="small-label">override</div>
+        <div class="toggle on" role="switch" aria-checked="true">
+          <span class="ind on">ON</span>
+          <span class="ind off">OFF</span>
+          <span class="knob"></span>
+        </div>
+        <div class="lcd">*/30 · poll 60s</div>
+      </div>
+
+      <!-- idle -->
+      <div class="strip">
+        <div class="channel-label">idle</div>
+        <div class="led-row">
+          <div class="led on"><span class="dot"></span>arm</div>
+          <div class="led"><span class="dot"></span>scan</div>
+        </div>
+        <div class="fader-mini">
+          <div class="track"></div>
+          <div class="ticks">
+            <div class="tick"></div><div class="tick"></div><div class="tick"></div>
+            <div class="tick"></div><div class="tick"></div>
+          </div>
+          <div class="cap" style="top: 52%"></div>
+        </div>
+        <div class="small-label">override</div>
+        <div class="toggle on" role="switch" aria-checked="true">
+          <span class="ind on">ON</span>
+          <span class="ind off">OFF</span>
+          <span class="knob"></span>
+        </div>
+        <div class="lcd">:17 hourly</div>
+      </div>
+
+      <!-- architect -->
+      <div class="strip">
+        <div class="channel-label">architect</div>
+        <div class="led-row">
+          <div class="led"><span class="dot"></span>arm</div>
+          <div class="led"><span class="dot"></span>draw</div>
+        </div>
+        <div class="fader-mini">
+          <div class="track"></div>
+          <div class="ticks">
+            <div class="tick"></div><div class="tick"></div><div class="tick"></div>
+            <div class="tick"></div><div class="tick"></div>
+          </div>
+          <div class="cap" style="top: 64%"></div>
+        </div>
+        <div class="small-label">override</div>
+        <div class="toggle" role="switch" aria-checked="false">
+          <span class="ind on">ON</span>
+          <span class="ind off">OFF</span>
+          <span class="knob"></span>
+        </div>
+        <div class="lcd">— off —</div>
+      </div>
+
+      <!-- pod -->
+      <div class="strip">
+        <div class="channel-label">pod</div>
+        <div class="led-row">
+          <div class="led on"><span class="dot"></span>arm</div>
+          <div class="led red"><span class="dot"></span>heal</div>
+        </div>
+        <div class="fader-mini">
+          <div class="track"></div>
+          <div class="ticks">
+            <div class="tick"></div><div class="tick"></div><div class="tick"></div>
+            <div class="tick"></div><div class="tick"></div>
+          </div>
+          <div class="cap" style="top: 28%"></div>
+        </div>
+        <div class="small-label">override</div>
+        <div class="toggle on" role="switch" aria-checked="true">
+          <span class="ind on">ON</span>
+          <span class="ind off">OFF</span>
+          <span class="knob"></span>
+        </div>
+        <div class="lcd">diagnose · 5m</div>
+      </div>
+
+    </section>
+
+    <!-- ── PRESETS + GLOBAL ──────────────────────────────────────── -->
+    <section class="right" aria-label="presets and global">
+      <div class="section-title">Presets</div>
+
+      <div class="presets" role="radiogroup" aria-label="preset bank">
+        <div class="preset" role="radio"><span class="num">A1</span>UNHINGED</div>
+        <div class="preset" role="radio"><span class="num">A2</span>LOOSE</div>
+        <div class="preset active" role="radio" aria-checked="true"><span class="num">B1</span>BALANCED</div>
+        <div class="preset" role="radio"><span class="num">B2</span>CAREFUL</div>
+        <div class="preset" role="radio"><span class="num">C1</span>STRICT</div>
+        <div class="preset" role="radio"><span class="num">C2</span>BUREAU&shy;CRAT</div>
+      </div>
+
+      <div class="group">
+        <h4>Branch isolation</h4>
+        <div class="knob" title="how much branches should consider each other"><div class="pointer" style="transform: translateX(-50%) rotate(-30deg); transform-origin: 50% 24px;"></div></div>
+        <div class="small-label" style="text-align:center">solo  ·  chord</div>
+      </div>
+
+      <div class="group">
+        <h4>Red-CI merge tolerance</h4>
+        <div class="meter-row">
+          <span class="meter-label">red %</span>
+          <div class="meter" style="--w: 18%"></div>
+        </div>
+        <div class="meter-row">
+          <span class="meter-label">amber %</span>
+          <div class="meter" style="--w: 42%"></div>
+        </div>
+        <div class="meter-row">
+          <span class="meter-label">green</span>
+          <div class="meter" style="--w: 88%"></div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="footer">
+    <span class="stamp">conductr · console · MK-I</span>
+    <span class="note">⚠ mockup — no wiring · safety levels TBD in interviews</span>
+    <span class="stamp">v0.0.0-mock</span>
+  </div>
+</div>
+
+</body>
+</html>
