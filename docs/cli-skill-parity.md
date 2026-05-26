@@ -167,6 +167,8 @@ As of adoption, the mapping is:
 |-----------------|----------------------------------------|-------------------|
 | `begin`         | `skills/begin/SKILL.md` (to be added) | Claude-required   |
 | `orchestrate`   | `skills/orchestrate/SKILL.md`          | Claude-required   |
+| `architect`     | `skills/architect/SKILL.md`            | Claude-required   |
+| `idle`          | `skills/idle/SKILL.md`                 | Claude-required   |
 | `diagnose`      | `skills/diagnose/SKILL.md` (to be added) | Function-only   |
 | `free`          | `skills/free/SKILL.md` (to be added)  | Function-only     |
 | `heal`          | `skills/heal/SKILL.md` (to be added)  | Function-only     |
@@ -179,6 +181,32 @@ As of adoption, the mapping is:
 | `schedule`      | `skills/schedule/SKILL.md` (to be added) | Function-only  |
 | `run-task`      | `skills/run-task/SKILL.md` (to be added) | Function-only  |
 | `instance`      | `skills/instance/SKILL.md` (to be added) | Claude-required (when unblocked) |
+
+Sub-subcommands of `architect` (multi-word `name:` in SKILL.md — excluded from the top-level parity check):
+
+| CLI sub-subcommand              | Skill section                          | Flavor            |
+|---------------------------------|----------------------------------------|-------------------|
+| `architect review`              | `skills/architect/SKILL.md`            | Claude-required   |
+| `architect plan`                | `skills/architect/SKILL.md`            | Claude-required   |
+| `architect diagram`             | `skills/architecture-diagram/SKILL.md` | Claude-required   |
+| `architect security-review`     | `skills/architect/SKILL.md`            | Claude-required   |
+
+## Agnostic-pattern rule
+
+The architect and idle skills are designed to work on any repository, not just
+Rust hexagonal codebases. The parity check itself is ecosystem-agnostic — it
+checks the `conductr` CLI surface against the `skills/` directory of the
+_conductr repo itself_, regardless of which repo idle is scanning.
+
+When idle runs on a target repo:
+- The architecture audit reads `.claude/base.md` from the target repo and
+  audits against whatever pattern that file declares.
+- If `.claude/base.md` is absent, hexagonal is proposed as the default.
+- The `check_cli_skill_parity` predicate is gated on the presence of a
+  `skills/` directory in the target repo. Repos without a `skills/` surface
+  produce no parity findings — it is a no-op, not an error.
+- Phases 3 (clippy) and 4 (coverage) are gated on a root `Cargo.toml` probe.
+  Non-Rust repos skip these phases with a single log line.
 
 **Migration note:** `skills/conductr-pod/SKILL.md` currently covers
 `diagnose`, `heal`, and `save-state` as a single omnibus skill. Under this

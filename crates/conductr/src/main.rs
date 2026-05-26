@@ -1410,6 +1410,11 @@ enum ArchitectCmd {
     /// Opens or reuses the `conductr-architect` tmux session, starts Claude if
     /// needed, then sends `/architect plan <issues>`.
     Plan(ArchitectPlanArgs),
+    /// LLM-driven security audit (Claude-required).
+    ///
+    /// Opens or reuses the `conductr-architect` tmux session, starts Claude if
+    /// needed, then sends `/architect security-review`.
+    SecurityReview(ArchitectSecurityReviewArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -1460,6 +1465,16 @@ struct ArchitectPlanArgs {
     /// At least one issue is required.
     #[arg(required = true)]
     issues: Vec<String>,
+    /// Working directory for the tmux session (defaults to current directory).
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    /// Print the plan without creating sessions, starting Claude, or sending keys.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Parser)]
+struct ArchitectSecurityReviewArgs {
     /// Working directory for the tmux session (defaults to current directory).
     #[arg(long)]
     cwd: Option<PathBuf>,
@@ -1746,6 +1761,7 @@ async fn run_architect(args: ArchitectArgs) -> Result<()> {
         ArchitectCmd::Review(a) => run_architect_review(a).await,
         ArchitectCmd::Diagram(a) => run_architect_diagram(a).await,
         ArchitectCmd::Plan(a) => run_architect_plan(a).await,
+        ArchitectCmd::SecurityReview(a) => run_architect_security_review(a).await,
     }
 }
 
@@ -1758,13 +1774,31 @@ async fn run_architect_review(args: ArchitectReviewArgs) -> Result<()> {
         .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
         .unwrap_or_else(|| ".".to_string());
 
-    // Workspace-wide mode: run the deterministic parity predicate before
-    // handing off to Claude, so findings are available regardless of whether
-    // the tmux session starts successfully.
+    // Workspace-wide mode: run deterministic predicates before handing off to
+    // Claude, so findings are available regardless of whether the tmux session
+    // starts successfully.
     if args.target.is_none() {
         let repo_path = args.cwd.as_deref().map(PathBuf::from)
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
+
+        // Check .claude/base.md — emits one finding (with hex default) if absent
+        // or unstructured, so every repo gets useful output on first idle pass.
+        let base_findings = idle::check_base_md(&repo_path);
+        if base_findings.is_empty() {
+            println!("architect: .claude/base.md OK");
+        } else {
+            for f in &base_findings {
+                println!(
+                    "architect: [{}] {}",
+                    idle::severity_label(&f.severity),
+                    f.title
+                );
+            }
+        }
+
+        // CLI–skill parity: gate on skills/ directory presence; repos without a
+        // skills surface produce no parity findings (not an error).
         match parity::Workspace::open(&repo_path) {
             Ok(ws) => {
                 let findings = parity::check_cli_skill_parity(&ws);
@@ -1781,7 +1815,7 @@ async fn run_architect_review(args: ArchitectReviewArgs) -> Result<()> {
                     println!("architect: {} parity finding(s)", findings.len());
                 }
             }
-            Err(e) => eprintln!("architect: parity check skipped: {e}"),
+            Err(_) => println!("architect: no skills/ surface — parity check skipped"),
         }
     }
 
@@ -1889,6 +1923,66 @@ async fn run_architect_review_dry(
         println!("plan: → would start Claude: `{claude_cmd}`");
         println!("plan: → would send: `{skill_cmd}`");
     }
+    Ok(())
+}
+
+// ── Architect security-review ─────────────────────────────────────────────────
+
+async fn run_architect_security_review(args: ArchitectSecurityReviewArgs) -> Result<()> {
+    let session = "conductr-architect";
+    let cwd = args
+        .cwd
+        .as_deref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| ".".to_string());
+
+    let skill_cmd = "/architect security-review";
+    let claude_cmd = "claude --dangerously-skip-permissions";
+
+    if args.dry_run {
+        let tmux = Tmux::new();
+        return run_architect_review_dry(&tmux, session, &cwd, claude_cmd, skill_cmd).await;
+    }
+
+    let tmux = Tmux::new();
+    let state = ensure_session(&tmux, session, &cwd)
+        .await
+        .with_context(|| format!("ensuring tmux session '{session}'"))?;
+
+    match &state {
+        SessionState::Existing(Health::Working { activity }) => {
+            println!("architect: session '{session}' is busy ({activity}); skipping");
+            return Ok(());
+        }
+        SessionState::Existing(Health::Unknown { reason }) => {
+            println!("architect: session '{session}' is unclassified ({reason}); skipping");
+            return Ok(());
+        }
+        SessionState::Existing(Health::Crashed { .. }) => {
+            println!("architect: session '{session}' crashed — restarting Claude");
+            tmux.send_line(session, claude_cmd)
+                .await
+                .context("restarting Claude after crash")?;
+            wait_for_idle(&tmux, session).await?;
+        }
+        SessionState::Created => {
+            println!("architect: created session '{session}' — starting Claude");
+            tmux.send_line(session, claude_cmd)
+                .await
+                .context("starting Claude in new session")?;
+            wait_for_idle(&tmux, session).await?;
+        }
+        SessionState::Existing(Health::Idle { .. }) => {
+            println!("architect: session '{session}' is idle — sending security-review prompt");
+        }
+    }
+
+    println!("architect: sending: {skill_cmd}");
+    tmux.send_line(session, skill_cmd)
+        .await
+        .context("sending architect security-review prompt")?;
+
     Ok(())
 }
 

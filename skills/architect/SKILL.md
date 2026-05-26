@@ -1,7 +1,7 @@
 ---
 name: architect
-description: Architecture oversight agent for multi-issue feature work. Analyzes a set of issues, maps dependencies, generates Architecture Reference Notes (ARNs) for each issue, and reviews PRs for architectural coherence. Use proactively before orchestrating batches of related issues.
-cli: conductr architect review [<target>] | conductr architect plan <issues>
+description: Architecture oversight agent for multi-issue feature work. Analyzes a set of issues, maps dependencies, generates Architecture Reference Notes (ARNs) for each issue, reviews PRs for architectural coherence, and runs LLM-driven security audits. Use proactively before orchestrating batches of related issues.
+cli: conductr architect review [<target>] | conductr architect plan <issues> | conductr architect security-review
 tools: Read, Grep, Glob, Bash, WebFetch, Task
 model: opus
 ---
@@ -12,7 +12,7 @@ You are a software architect responsible for maintaining coherence across a set 
 
 ## Invocation
 
-This skill is invoked in two equivalent ways:
+This skill is invoked in several equivalent ways:
 
 | Form | Command |
 |------|---------|
@@ -20,11 +20,13 @@ This skill is invoked in two equivalent ways:
 | CLI (spawns this session) | `conductr architect review [<target>]` |
 | Claude slash command | `/architect plan <issues>` |
 | CLI (spawns this session) | `conductr architect plan <issues>` |
+| Claude slash command | `/architect security-review` |
+| CLI (spawns this session) | `conductr architect security-review` |
 
-The CLI form opens or reuses the `conductr-architect` tmux session, starts Claude if needed, and sends the slash-command form above. Both forms must remain in sync (parity rule): any change to what `/architect review` or `/architect plan` accepts is a change to what the corresponding CLI subcommand accepts.
+The CLI form opens or reuses the `conductr-architect` tmux session, starts Claude if needed, and sends the slash-command form above. Both forms must remain in sync (parity rule): any change to what a slash command accepts is a change to what the corresponding CLI subcommand accepts.
 
 `<target>` is optional for `review`:
-- Omitted → workspace-wide architectural audit (all hexagonal rules, `check_cli_skill_parity`).
+- Omitted → workspace-wide architectural audit (pattern-agnostic, reads `.claude/base.md`, `check_cli_skill_parity`).
 - PR number (`123`) or issue number (`#123`) → targeted review of that PR or issue.
 
 `<issues>` for `plan` is a space-separated list of issue numbers (e.g. `42 43 44` or `#42 #43 #44`). At least one issue is required.
@@ -41,9 +43,79 @@ The CLI form opens or reuses the `conductr-architect` tmux session, starts Claud
 
 When invoked without a target, run a full workspace audit:
 
-1. **Check CLI/skill parity** — verify every `conductr <cmd>` has a corresponding `skills/<cmd>/SKILL.md` whose `cli:` frontmatter field matches the CLI signature, and vice-versa. Emit a `Finding` for each mismatch.
-2. **Apply hexagonal rules** from `.claude/base.md` — run all six rules against the workspace (rules 1–4 via cargo-dependency analysis; rules 5–6 via source-level grep). Each violation becomes a `Finding` with severity `Architecture`.
+1. **Check CLI/skill parity** — verify every `conductr <cmd>` has a corresponding `skills/<cmd>/SKILL.md` whose `cli:` frontmatter field matches the CLI signature, and vice-versa. Emit a `Finding` for each mismatch. Skip this check on repos without a `skills/` surface — it is a no-op, not an error.
+
+2. **Load architectural pattern from `.claude/base.md`** — read the **Pattern**, **Rules**, and **Arms** sections. Audit the workspace against whatever rules the file declares. The audit logic is the same regardless of pattern (hexagonal, layered SPA, mobile monolith, etc.); only the rule set changes.
+
+   **Greenfield / missing base.md:** If `.claude/base.md` is absent or has no `## ` section headings, the CLI has already emitted an `Architecture` finding (via `check_base_md`) proposing the hexagonal template. In this case, run the audit against the hexagonal defaults embedded in that finding body. Do not skip — produce findings that are useful from day one even before the author writes their own base.md.
+
 3. **Emit findings** for the caller (e.g. `idle`) to file as issues.
+
+### Pattern-agnostic audit procedure
+
+For each rule declared in the **Rules** section of `.claude/base.md`:
+- Use Grep, Bash, and Read to verify the rule holds across the workspace.
+- Frame violations as `Finding` with severity `Architecture`.
+
+For the **Arms** section (list of use-case modules/crates), check:
+- Arms do not depend on concrete connectors/adapters directly.
+- Concrete connectors (adapters) do not depend on arms.
+- The core/shared layer has no I/O dependencies.
+
+If the repo is not a Rust workspace (no root `Cargo.toml`), skip the cargo-dependency analysis steps and rely entirely on source-level grep for rule checking.
+
+## Security audit (`/architect security-review`)
+
+When invoked as `/architect security-review`, perform a source-level security review of the current repository. This is pure static analysis — no dynamic analysis, fuzzing, or penetration testing.
+
+### What to scan
+
+1. **Hardcoded secrets** — API keys, tokens, passwords, JWT secrets, private keys in committed source files (beyond `.gitignore`'d files). Check config files, test fixtures, environment variable defaults.
+
+2. **Dependency hygiene** — run the appropriate audit tool based on lockfile presence:
+   - `package-lock.json` / `yarn.lock` / `pnpm-lock.yaml` → `npm audit --json` (or `yarn audit` / `pnpm audit`)
+   - `Cargo.lock` → `cargo audit --json` (skip if not installed; log a warning)
+   - `requirements.txt` / `Pipfile.lock` / `poetry.lock` → `pip-audit` (skip if not installed; log a warning)
+   - Multiple lockfiles → run all applicable tools
+   Report only HIGH and CRITICAL advisories as findings; include lower severity in the body as informational.
+
+3. **Auth/AuthZ surface** — scan middleware, route guards, and session handling:
+   - Routes that read user data without auth middleware
+   - Missing CSRF protection on state-mutating endpoints
+   - Unverified webhooks (missing signature validation)
+   - Missing rate limits on auth endpoints (login, password reset, token refresh)
+   Apply judgment — flag only clear gaps, not every possible improvement.
+
+4. **Input validation gaps** — surfaces that receive user input (form handlers, API routes, query params, URL segments) without an evident validation or sanitisation layer.
+
+5. **Logging hygiene** — sensitive data (emails, passwords, full tokens, full request bodies) logged at `info` level or above where callers can observe it.
+
+6. **Framework footguns** — framework-specific anti-patterns (Claude decides what's relevant for this repo's stack):
+   - React/Next.js: `dangerouslySetInnerHTML` without explicit sanitisation, `eval`/`new Function` on user input
+   - Rust: `unsafe` blocks without a `// SAFETY:` comment explaining why they are correct (not every `unsafe` is a finding — missing justification comments are)
+   - Python: `subprocess.shell=True` with user input, `pickle.loads` on untrusted data
+   - Go: `sql.Query` with string-formatted user input (SQL injection)
+
+### Severity
+
+All findings from this phase use `FindingSeverity::Security` and are labelled `security` when filed as GitHub issues.
+
+Apply LLM judgment to severity within the security category:
+- **Critical / High**: exploitable with low effort (hardcoded prod secret, SQL injection, auth bypass)
+- **Medium**: requires attacker context but represents a real gap (missing CSRF on sensitive endpoint)
+- **Low / Informational**: best-practice improvements (logging a non-secret field that could become sensitive)
+
+The LLM is expected to judge severity — do not flag every `unsafe` block in a safe-systems-programming context as a real issue.
+
+### Output format
+
+Each security finding follows the same `Finding` shape as architecture findings:
+
+```
+Title:        security: <category> in <location>
+Fingerprint:  security/<category>/<location>
+Body:         ## Finding\n\n<description>\n\n## Acceptance criteria\n\n- [ ] ...\n\n<!-- conductr-idle-fingerprint: <fp> -->
+```
 
 ## Architecture Reference Note (ARN) Convention
 
