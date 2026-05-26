@@ -30,16 +30,18 @@ sends the slash form. Both must stay in sync (parity rule).
 
 ### Scheduling
 
-`cognitive-debt` is designed for **twice-daily** cadence. Default cron:
+`cognitive-debt` is designed for **twice-daily** cadence — once around
+the start of the European workday and once ~12 h later for the
+US-evening readership. Default cron (UTC):
 
 ```
-0 9,17 * * *
+0 5,17 * * *
 ```
 
 Install via:
 
 ```bash
-conductr begin cognitive-debt "0 9,17 * * *"
+conductr begin cognitive-debt "0 5,17 * * *"
 ```
 
 ### Arguments
@@ -62,8 +64,8 @@ Read `.conductr` from the project root:
 pages          = 2
 # Words-per-page used for length budgeting. Each embedded mermaid counts as ~150 words.
 words_per_page = 500
-# Cron schedule (informational; the host crontab is the source of truth).
-schedule       = "0 9,17 * * *"
+# Cron schedule, UTC (informational; the host crontab is the source of truth).
+schedule       = "0 5,17 * * *"
 # Suppress the brief if nothing significant moved.
 quiet_day_ok   = false
 
@@ -215,8 +217,9 @@ Output (under `<repo>/.cognitive-debt/`):
 └── <UTC-date>-<period>.md      # the brief (period = "morning" | "evening")
 ```
 
-- `period` is `morning` if cron-hour < 12 local; `evening` otherwise.
-  (Configurable later; not worth a flag now.)
+- `period` is `morning` if the run's UTC hour < 12; `evening` otherwise.
+  (Anchored to UTC, not local time, so artefact filenames are stable
+  across runner timezones. Configurable later; not worth a flag now.)
 - Under `--no-write`, print the brief to the session and skip the
   filesystem entirely.
 - Update `.cognitive-debt/state.json` with `last_brief_sha = <HEAD-sha>`
