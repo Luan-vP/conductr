@@ -1,7 +1,7 @@
 ---
 name: cognitive debt
-description: Twice-daily architect brief that helps humans keep up with how a project is changing. Diffs the repo against the previous brief, renders A/B mermaid diagrams of critical flows that moved, lists new/removed/renamed services with one-line TL;DRs, and fits the whole thing into a configurable page budget (default 2). Claude-required — runs on an architect-voiced tmux session.
-cli: conductr cognitive-debt [--repo-path <path>] [--pages <n>] [--since <ref>] [--no-write] [--quiet-day-ok]
+description: Twice-daily architect brief that helps humans keep up with how a project is changing. Diffs the repo against the previous brief, renders A/B mermaid diagrams of critical flows that moved, lists new/removed/renamed services with one-line TL;DRs, and fits the whole thing into a configurable page budget (default 2). After publishing a brief, books a review block on the user's calendar in the next free `[conductr:window]` slot within a configurable horizon (default 3 days). Claude-required — runs on an architect-voiced tmux session.
+cli: conductr cognitive-debt [--repo-path <path>] [--pages <n>] [--since <ref>] [--no-write] [--quiet-day-ok] [--no-schedule-review] [--review-window-days <n>] [--review-minutes <n>]
 tools: Read, Grep, Glob, Bash, Write
 model: opus
 ---
@@ -21,8 +21,8 @@ the page budget.
 
 | Form | Command |
 |------|---------|
-| Claude slash command | `/cognitive-debt [--pages <n>] [--since <ref>] [--no-write] [--quiet-day-ok]` |
-| CLI (spawns this session) | `conductr cognitive-debt [--repo-path <path>] [--pages <n>] [--since <ref>] [--no-write] [--quiet-day-ok]` |
+| Claude slash command | `/cognitive-debt [--pages <n>] [--since <ref>] [--no-write] [--quiet-day-ok] [--no-schedule-review] [--review-window-days <n>] [--review-minutes <n>]` |
+| CLI (spawns this session) | `conductr cognitive-debt [--repo-path <path>] [--pages <n>] [--since <ref>] [--no-write] [--quiet-day-ok] [--no-schedule-review] [--review-window-days <n>] [--review-minutes <n>]` |
 
 The CLI form opens or reuses the `conductr-cognitive-debt` tmux session,
 starts Claude (architect voicing per `[band.defaults]`) if needed, and
@@ -51,8 +51,11 @@ conductr begin cognitive-debt "0 5,17 * * *"
 | `--repo-path <path>` | cwd | Project root. |
 | `--pages <n>` | `[cognitive_debt] pages` in `.conductr` (default `2`) | Page budget. |
 | `--since <ref>` | the previous brief's commit SHA (or 14d ago if none) | Window start. |
-| `--no-write` | off | Print the brief to the session only; don't create artefacts. |
-| `--quiet-day-ok` | off | Suppress the brief entirely if nothing significant changed (otherwise emit a one-line "quiet day" stub). |
+| `--no-write` | off | Print the brief to the session only; don't create artefacts. Implies `--no-schedule-review`. |
+| `--quiet-day-ok` | off | Suppress the brief entirely if nothing significant changed (otherwise emit a one-line "quiet day" stub). When the brief is suppressed, no review is scheduled. |
+| `--no-schedule-review` | off | Skip the post-publish calendar booking step (Phase 7). |
+| `--review-window-days <n>` | `[cognitive_debt] review_window_days` (default `3`) | Horizon for finding a free `[conductr:window]` slot. |
+| `--review-minutes <n>` | `[cognitive_debt] review_minutes` (default `15`) | Length of the booked review block. |
 
 ## Configuration
 
@@ -68,6 +71,9 @@ words_per_page = 500
 schedule       = "0 5,17 * * *"
 # Suppress the brief if nothing significant moved.
 quiet_day_ok   = false
+# Post-publish review booking (Phase 7). Set both to 0 to disable.
+review_window_days = 3
+review_minutes     = 15
 
 # Critical flows. If empty, the skill infers the top 3 most-touched
 # arms in the window and treats each as a flow.
@@ -234,8 +240,92 @@ After writing, print to the agent session:
 2. The TL;DR bullets.
 3. Section index (which sections were included vs cut).
 4. Window covered (`<since>..HEAD`).
+5. Outcome of Phase 7 (review slot booked, or why not).
 
 The session output is a glance; the brief is the artefact.
+
+## Phase 7 — Schedule a review block
+
+After a brief is written (i.e. an artefact actually exists on disk),
+**conductr books a review block on the user's calendar within
+`review_window_days` (default 3)**. This step turns the brief from a
+published-and-forgotten artefact into a tracked review obligation.
+
+Skip Phase 7 when **any** of:
+
+- `--no-schedule-review` is set;
+- `--no-write` is set (no artefact → nothing to review);
+- the brief was a quiet-day stub (or fully suppressed under
+  `--quiet-day-ok`);
+- `review_window_days = 0` or `review_minutes = 0` in config;
+- the project has no `[gcal]` (or equivalent) calendar adapter
+  configured — log a single line and continue, don't fail.
+
+Workflow:
+
+1. **Build the search window.** `[now, now + review_window_days]`,
+   inclusive, in the user's local timezone (read from the calendar
+   adapter; fall back to UTC). Booking always lands ≥ 30 min in the
+   future to avoid back-of-now collisions.
+2. **List `[conductr:window]` events** in that range via
+   `CalendarPort::list_upcoming_events`. These are the slot pool.
+3. **Carve out blockers and existing bookings.** For each window,
+   subtract overlapping `[conductr:blocked]` events and any
+   already-booked `[conductr:*]` events (decisions, tests, other
+   reviews).
+4. **Idempotency check.** Search the window for an event whose title
+   already starts with `[conductr:review] cognitive-debt <date> <period>`
+   matching this brief. If present, **update it in place** (move
+   only if the original slot was vacated; otherwise leave it
+   untouched and exit Phase 7).
+5. **Pick the earliest slot ≥ `review_minutes` long.** If multiple
+   candidates of equal earliness exist, prefer one that doesn't split
+   an otherwise-contiguous window (i.e. align to a window edge).
+6. **Create the event** via `CalendarPort::create_event`:
+
+   ```
+   title:    [conductr:review] cognitive-debt <UTC-date> <period>
+   start:    <chosen-slot-start>
+   end:      <start + review_minutes>
+   body:     1) link to .cognitive-debt/<date>-<period>.md (relative
+                path; rendered URL if a hosting hook is configured)
+             2) the brief's TL;DR bullets, copied verbatim
+             3) line: "originally-scheduled: <chosen-slot-start ISO>"
+                — used by `conductr sync` reconciliation to detect
+                user-moves (see docs/calendar.md).
+   tag:      review                 (slot-tag in [conductr:review])
+   uuid:     <stable: sha1(brief-path)[:8]>
+   ```
+
+   The UUID in the body makes the event findable on later runs even
+   if the title is edited.
+
+7. **On no-slot-available within the horizon**, do **not** book
+   outside it. Instead:
+   - Write a single line to `.cognitive-debt/state.json` under
+     `last_review_skipped: { date, reason: "no-slot-in-<N>-days" }`.
+   - Print the same line to the session.
+   - Do *not* file a GitHub issue (avoids notification noise on
+     under-provisioned days). Surfacing under-provisioned windows
+     is the job of `conductr sync`, not this skill.
+
+8. **Record the booking** in `.cognitive-debt/state.json`:
+
+   ```json
+   {
+     "last_brief_sha": "...",
+     "last_run":       "...",
+     "last_review":    {
+       "event_id":   "<gcal id>",
+       "start":      "<ISO>",
+       "uuid":       "<sha1(brief-path)[:8]>"
+     }
+   }
+   ```
+
+Phase 7 is **observe-and-write-once**: it never deletes events, never
+moves human-rescheduled events, and never books outside the configured
+horizon.
 
 ## DO / DON'T
 
@@ -247,6 +337,7 @@ The session output is a glance; the brief is the artefact.
 - Skip quiet days cleanly when `--quiet-day-ok` is set.
 - Pose questions in §5, not assertions — the brief is a starting
   point for human review, not a verdict.
+- Book the review block idempotently — same brief, same review event.
 
 ### DON'T
 
@@ -257,6 +348,11 @@ The session output is a glance; the brief is the artefact.
 - Modify `.conductr` or the root `.gitignore`.
 - Run more than once per scheduled tick (check `state.json` —
   if `last_run` is within an hour of now, exit with a no-op).
+- Book a review event outside `review_window_days`. If no slot fits,
+  record the skip and move on — don't force a slot into a blocked or
+  out-of-window time.
+- Move a review event the user has already rescheduled (compare against
+  `originally-scheduled` in the event body, per the calendar reconciliation rules).
 
 ## Related
 
