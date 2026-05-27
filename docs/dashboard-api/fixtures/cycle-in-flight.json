@@ -1,0 +1,44 @@
+{
+  "protocol": "1.0.0",
+  "impl": "0.4.2",
+  "host": "luan-desk",
+  "snapshot_at": "2026-05-27T13:42:08Z",
+  "data": {
+    "repo": { "owner": "luan-vp", "repo": "conductr" },
+    "started_at": "2026-05-27T13:30:00Z",
+    "finished_at": null,
+    "trigger": "cron",
+    "state": "running",
+    "beats": [
+      {
+        "name": "architect",
+        "state": "done",
+        "started_at": "2026-05-27T13:30:01Z",
+        "finished_at": "2026-05-27T13:32:14Z",
+        "pr_number": null
+      },
+      {
+        "name": "implementer",
+        "state": "running",
+        "started_at": "2026-05-27T13:32:14Z",
+        "finished_at": null,
+        "pr_number": 188
+      },
+      {
+        "name": "reviewer",
+        "state": "queued",
+        "started_at": null,
+        "finished_at": null,
+        "pr_number": null
+      },
+      {
+        "name": "tester",
+        "state": "queued",
+        "started_at": null,
+        "finished_at": null,
+        "pr_number": null
+      }
+    ],
+    "pr_numbers": [188]
+  }
+}

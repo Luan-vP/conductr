@@ -495,6 +495,29 @@ pub struct UpdateCalendarEvent {
     pub description: Option<String>,
 }
 
+// ── conductr-idle types ───────────────────────────────────────────────────────
+
+/// Category of an idle-scan finding. Influences the label applied to the
+/// resulting GitHub issue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FindingSeverity {
+    Architecture,
+    Quality,
+    Coverage,
+}
+
+/// One drift detected by an idle-scan pass (architecture rule violation,
+/// clippy warning, coverage gap, CLI/skill parity drift, …). Each finding has
+/// a stable `fingerprint` used to dedupe against existing issues.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Finding {
+    pub title: String,
+    pub body: String,
+    pub severity: FindingSeverity,
+    pub fingerprint: String,
+}
+
 // ── conductr-mail types ───────────────────────────────────────────────────────
 
 /// Opaque identifier for an agent (e.g. "claude/issue-16-…" branch name or session name).

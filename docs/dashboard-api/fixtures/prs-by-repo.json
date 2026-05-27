@@ -1,0 +1,62 @@
+{
+  "protocol": "1.0.0",
+  "impl": "0.4.2",
+  "host": "luan-desk",
+  "snapshot_at": "2026-05-27T13:42:08Z",
+  "data": {
+    "repo": { "owner": "luan-vp", "repo": "conductr" },
+    "mergeable_green": [
+      {
+        "number": 188,
+        "title": "feat(safety): SafetyPreset enum + maturity resolver",
+        "body": "Implements #172.\n\nAdds the SafetyPreset enum (UNHINGED · FERAL · FAST · STRICT · BUREAUCRATIC) plus the .conductr [safety] parser and resolve_preset(...).",
+        "head_ref": "claude/172-safety-schema",
+        "state": "Open",
+        "ci": "Success",
+        "linked_issue": 172
+      },
+      {
+        "number": 192,
+        "title": "chore: bump tracing-subscriber 0.3.18 -> 0.3.19",
+        "body": "Idle maintenance pass.",
+        "head_ref": "idle/ops/cargo-update-2026-05-27",
+        "state": "Open",
+        "ci": "Success",
+        "linked_issue": null
+      }
+    ],
+    "mergeable_red": [
+      {
+        "number": 189,
+        "title": "feat(safety): per-detent branch isolation",
+        "body": "Implements #173.",
+        "head_ref": "claude/173-branch-isolation",
+        "state": "Open",
+        "ci": "Failure",
+        "linked_issue": 173
+      }
+    ],
+    "conflicting": [
+      {
+        "number": 184,
+        "title": "feat(idle): maintenance ops phase 5",
+        "body": "Stale; rebase needed against develop.",
+        "head_ref": "claude/145-idle-ops",
+        "state": "Open",
+        "ci": "Success",
+        "linked_issue": 145
+      }
+    ],
+    "draft": [
+      {
+        "number": 195,
+        "title": "WIP: dashboard-api fixtures",
+        "body": "",
+        "head_ref": "claude/146-api-contract",
+        "state": "Open",
+        "ci": "Pending",
+        "linked_issue": 146
+      }
+    ]
+  }
+}

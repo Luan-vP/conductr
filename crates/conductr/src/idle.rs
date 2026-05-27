@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Result;
-use conductr_core::types::TmuxSession;
+use conductr_core::types::{Finding, FindingSeverity, TmuxSession};
 
 /// Ordered list of use-case crates for round-robin scanning.
 pub const USE_CASE_CRATES: &[&str] = &[
@@ -22,23 +22,6 @@ pub const USE_CASE_CRATES: &[&str] = &[
 
 /// Dependencies forbidden in `conductr-core` (Rule 4 — no I/O).
 const IO_DENY_DEPS: &[&str] = &["reqwest", "hyper"];
-
-// ── Public types ──────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum FindingSeverity {
-    Architecture,
-    Quality,
-    Coverage,
-}
-
-#[derive(Debug, Clone)]
-pub struct Finding {
-    pub title: String,
-    pub body: String,
-    pub severity: FindingSeverity,
-    pub fingerprint: String,
-}
 
 // ── Stale-pane reconciliation ─────────────────────────────────────────────────
 

@@ -106,6 +106,10 @@ enum Cmd {
     Sync(SyncArgs),
     /// Self-directed scan: architecture check + module clippy scan → file issues (Claude-required).
     Idle(IdleArgs),
+    /// Manual diff impact report: topology / LOC % / user flows / compliance / tech debt (Claude-required).
+    ChangeOverview(ChangeOverviewArgs),
+    /// Draft answers to topically-relevant open `human` issues against a change context (Claude-required).
+    HumanTicketDraft(HumanTicketDraftArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -435,6 +439,8 @@ async fn main() -> Result<()> {
         Cmd::Architect(a) => run_architect(a).await,
         Cmd::Sync(a) => run_sync(a).await,
         Cmd::Idle(a) => run_idle(a).await,
+        Cmd::ChangeOverview(a) => run_change_overview(a).await,
+        Cmd::HumanTicketDraft(a) => run_human_ticket_draft(a).await,
     }
 }
 
@@ -2431,6 +2437,194 @@ async fn run_architect_plan_dry(
         println!("plan: → would start Claude: `{claude_cmd}`");
         println!("plan: → would send: `{skill_cmd}`");
     }
+    Ok(())
+}
+
+// ── Change overview ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Parser)]
+struct ChangeOverviewArgs {
+    /// Comparison base (branch, tag, commit SHA, or `#<pr>`). Defaults to `origin/main`.
+    base: Option<String>,
+    /// Path to the repo root containing `.conductr` (defaults to current directory).
+    #[arg(long)]
+    repo_path: Option<PathBuf>,
+    /// Print what would happen without creating a session or sending commands.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+async fn run_change_overview(args: ChangeOverviewArgs) -> Result<()> {
+    let session = "conductr-change-overview";
+    let cwd = args
+        .repo_path
+        .map(|p| p.to_string_lossy().into_owned())
+        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| ".".to_string());
+
+    let skill_cmd = match args.base.as_deref() {
+        Some(b) => format!("/change-overview {b}"),
+        None => "/change-overview".to_string(),
+    };
+    let claude_cmd = "claude --dangerously-skip-permissions";
+
+    if args.dry_run {
+        let tmux = Tmux::new();
+        return run_claude_skill_dry(&tmux, "change-overview", session, &cwd, claude_cmd, &skill_cmd).await;
+    }
+
+    let tmux = Tmux::new();
+    let state = ensure_session(&tmux, session, &cwd)
+        .await
+        .with_context(|| format!("ensuring tmux session '{session}'"))?;
+
+    match &state {
+        SessionState::Existing(Health::Working { activity }) => {
+            println!("change-overview: session '{session}' is busy ({activity}); skipping");
+            return Ok(());
+        }
+        SessionState::Existing(Health::Unknown { reason }) => {
+            println!("change-overview: session '{session}' is unclassified ({reason}); skipping");
+            return Ok(());
+        }
+        SessionState::Existing(Health::Crashed { .. }) => {
+            println!("change-overview: session '{session}' crashed — restarting Claude");
+            tmux.send_line(session, claude_cmd)
+                .await
+                .context("restarting Claude after crash")?;
+            wait_for_idle(&tmux, session).await?;
+        }
+        SessionState::Created => {
+            println!("change-overview: created session '{session}' — starting Claude");
+            tmux.send_line(session, claude_cmd)
+                .await
+                .context("starting Claude in new session")?;
+            wait_for_idle(&tmux, session).await?;
+        }
+        SessionState::Existing(Health::Idle { .. }) => {
+            println!("change-overview: session '{session}' is idle — sending change-overview prompt");
+        }
+    }
+
+    println!("change-overview: sending: {skill_cmd}");
+    tmux.send_line(session, &skill_cmd)
+        .await
+        .context("sending change-overview skill command")?;
+
+    Ok(())
+}
+
+// ── Human-ticket draft ────────────────────────────────────────────────────────
+
+#[derive(Debug, Parser)]
+struct HumanTicketDraftArgs {
+    /// Change summary to compare tickets against. Inline text or a path to a markdown file.
+    #[arg(long)]
+    context: Option<String>,
+    /// Repository to scan, as `owner/repo`. Defaults to the current repo.
+    #[arg(long)]
+    repo: Option<String>,
+    /// Cap the number of drafted tickets (default 5).
+    #[arg(long)]
+    limit: Option<usize>,
+    /// Print what would happen without creating a session or sending commands.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+async fn run_human_ticket_draft(args: HumanTicketDraftArgs) -> Result<()> {
+    let session = "conductr-human-ticket-draft";
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| ".".to_string());
+
+    let mut skill_cmd = String::from("/human-ticket-draft");
+    if let Some(c) = &args.context {
+        skill_cmd.push_str(&format!(" --context {c}"));
+    }
+    if let Some(r) = &args.repo {
+        skill_cmd.push_str(&format!(" --repo {r}"));
+    }
+    if let Some(l) = args.limit {
+        skill_cmd.push_str(&format!(" --limit {l}"));
+    }
+    let claude_cmd = "claude --dangerously-skip-permissions";
+
+    if args.dry_run {
+        let tmux = Tmux::new();
+        return run_claude_skill_dry(&tmux, "human-ticket-draft", session, &cwd, claude_cmd, &skill_cmd).await;
+    }
+
+    let tmux = Tmux::new();
+    let state = ensure_session(&tmux, session, &cwd)
+        .await
+        .with_context(|| format!("ensuring tmux session '{session}'"))?;
+
+    match &state {
+        SessionState::Existing(Health::Working { activity }) => {
+            println!("human-ticket-draft: session '{session}' is busy ({activity}); skipping");
+            return Ok(());
+        }
+        SessionState::Existing(Health::Unknown { reason }) => {
+            println!("human-ticket-draft: session '{session}' is unclassified ({reason}); skipping");
+            return Ok(());
+        }
+        SessionState::Existing(Health::Crashed { .. }) => {
+            println!("human-ticket-draft: session '{session}' crashed — restarting Claude");
+            tmux.send_line(session, claude_cmd)
+                .await
+                .context("restarting Claude after crash")?;
+            wait_for_idle(&tmux, session).await?;
+        }
+        SessionState::Created => {
+            println!("human-ticket-draft: created session '{session}' — starting Claude");
+            tmux.send_line(session, claude_cmd)
+                .await
+                .context("starting Claude in new session")?;
+            wait_for_idle(&tmux, session).await?;
+        }
+        SessionState::Existing(Health::Idle { .. }) => {
+            println!("human-ticket-draft: session '{session}' is idle — sending prompt");
+        }
+    }
+
+    println!("human-ticket-draft: sending: {skill_cmd}");
+    tmux.send_line(session, &skill_cmd)
+        .await
+        .context("sending human-ticket-draft skill command")?;
+
+    Ok(())
+}
+
+async fn run_claude_skill_dry(
+    tmux: &Tmux,
+    label: &str,
+    session: &str,
+    cwd: &str,
+    claude_cmd: &str,
+    skill_cmd: &str,
+) -> Result<()> {
+    let sessions = match tmux.list_sessions().await {
+        Ok(s) => s,
+        Err(TmuxError::NoServer) | Err(TmuxError::NotInstalled) => {
+            println!("{label}: tmux not running");
+            println!("{label}: → would create session '{session}' at cwd={cwd}");
+            println!("{label}: → would start Claude: `{claude_cmd}`");
+            println!("{label}: → would send: `{skill_cmd}`");
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    if sessions.iter().any(|s| s.name == session) {
+        println!("{label}: session '{session}' exists; → would send: `{skill_cmd}`");
+    } else {
+        println!("{label}: → would create session '{session}' at cwd={cwd}");
+        println!("{label}: → would start Claude: `{claude_cmd}`");
+        println!("{label}: → would send: `{skill_cmd}`");
+    }
+
     Ok(())
 }
 
