@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use clap::CommandFactory;
 
-use crate::idle::{Finding, FindingSeverity};
+use conductr_core::types::{Finding, FindingSeverity};
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
