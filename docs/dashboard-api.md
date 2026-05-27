@@ -236,9 +236,19 @@ type StaffHit = {
 }
 ```
 
-The grammar choices (note vs hit, where duration comes from) are
-the subject of #72; this contract carries the shape but does not
-prescribe glyph semantics. Outlets render whatever `glyph` says.
+Glyph semantics are part of the protocol — outlets exhaustively
+switch on the four values and any new glyph requires a protocol
+major bump. #72 settles the cadence grammar within this set.
+
+| glyph  | shape                    | `duration_seconds` |
+|--------|--------------------------|--------------------|
+| `head` | sustained note          | required (> 0)     |
+| `rest` | explicit silence        | required (> 0)     |
+| `hit`  | percussion / instant    | `null`             |
+| `tied` | continuation of a `head` across the window edge | required (> 0) |
+
+A producer that needs a glyph not in this set must emit the closest
+fit and surface the detail in the row `label`, not invent a value.
 
 ### 4.7 Cron schedule (machine-wide)
 
