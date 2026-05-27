@@ -19,3 +19,6 @@ secrets*
 
 # Local outputs
 coverage-reports/
+
+# Conductr machine-local state (written by `conductr setup`)
+.conductr-local
