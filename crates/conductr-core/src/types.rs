@@ -536,3 +536,95 @@ pub struct MailMessage {
     pub sent_at: DateTime<Utc>,
     pub payload: MailKind,
 }
+
+// ── CI gate types ─────────────────────────────────────────────────────────────
+
+/// Operational safety profile that governs the merge gate.
+/// Resolved from the `[safety]` section of `.conductr` by `resolve_preset`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SafetyPreset {
+    /// Skip CI entirely; merge on push.
+    Unhinged,
+    /// Require ≥1 required check green; optional checks ignored.
+    Feral,
+    /// Require all required checks green; advisory amber tolerated.
+    Fast,
+    /// Require full green including advisory; one flake-retry on transient failures.
+    Strict,
+    /// Full green + human review approved + linked issue closed + ADR present.
+    Bureaucratic,
+}
+
+/// Pass/fail state of a single CI check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckStatus {
+    /// Check passed.
+    Green,
+    /// Advisory warning; not a hard failure.
+    Amber,
+    /// Check failed with a test-assertion or logic failure.
+    Red,
+    /// Check is still running.
+    Pending,
+    /// Transient infrastructure failure (timeout, runner error) — retriable under STRICT.
+    Transient,
+}
+
+/// A single CI check in a branch's check suite.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Check {
+    pub name: String,
+    pub status: CheckStatus,
+    /// `true` = required check; `false` = advisory/optional.
+    pub required: bool,
+}
+
+/// A branch pending merge, together with all context the merge gate needs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Branch {
+    pub head_ref: String,
+    pub checks: Vec<Check>,
+    /// A human reviewer has approved the PR (BUREAUCRATIC).
+    pub review_approved: bool,
+    /// The linked issue is closed (BUREAUCRATIC).
+    pub linked_issue_closed: bool,
+    /// An ADR file is present in the branch's commits (BUREAUCRATIC).
+    pub adr_present: bool,
+}
+
+/// The outcome of the merge predicate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeDecision {
+    /// Branch is safe to merge.
+    Allowed,
+    /// Branch cannot be merged; describes the first blocking reason.
+    BlockedBy(BlockReason),
+    /// One transient infrastructure failure was detected; retry once before blocking.
+    RetryOnce(RetryReason),
+}
+
+/// Why a merge was blocked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockReason {
+    /// FERAL: no required check is green.
+    NoRequiredCheckGreen,
+    /// A required check is not green (name of the failing check).
+    RequiredCheckFailed(String),
+    /// An advisory check is not green (name of the check).
+    AdvisoryCheckFailed(String),
+    /// BUREAUCRATIC: no human review approval.
+    ReviewNotApproved,
+    /// BUREAUCRATIC: linked issue is still open.
+    LinkedIssueNotClosed,
+    /// BUREAUCRATIC: no ADR file found in the branch's commits.
+    AdrNotPresent,
+}
+
+/// Why a retry was requested.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryReason {
+    /// Name of the check that produced a transient signal.
+    pub check_name: String,
+}
