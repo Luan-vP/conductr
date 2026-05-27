@@ -1,0 +1,916 @@
+openapi: "3.1.0"
+info:
+  title: conductr Dashboard API
+  version: "1.0.0"
+  description: >
+    Wire contract between the conductr daemon and dashboard outlets
+    (VSCode, Android, web). JSON only. v1 transport: Unix socket (local)
+    or HTTP. Push: Server-Sent Events. Pull: HTTP GET.
+  contact:
+    url: https://github.com/Luan-vP/conductr/issues/146
+
+servers:
+  - url: http+unix://%2Fhome%2Fuser%2F.conductr%2Fdaemon.sock
+    description: Local Unix socket (v1)
+
+tags:
+  - name: meta
+    description: Version and health
+  - name: snapshot
+    description: Full dashboard state
+  - name: sections
+    description: Individual data sections
+  - name: commands
+    description: Mutating commands
+
+paths:
+  /api/v1/version:
+    get:
+      tags: [meta]
+      operationId: getVersion
+      summary: Protocol and daemon version
+      responses:
+        "200":
+          description: Version info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionInfo"
+
+  /api/v1/snapshot:
+    get:
+      tags: [snapshot]
+      operationId: getSnapshot
+      summary: Full dashboard snapshot
+      responses:
+        "200":
+          description: Current dashboard state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSnapshot"
+
+  /api/v1/events:
+    get:
+      tags: [snapshot]
+      operationId: streamEvents
+      summary: Server-Sent Events stream
+      description: >
+        Long-lived SSE stream. First event is always `snapshot` with the full
+        `DashboardSnapshot`. Subsequent events are targeted updates.
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/v1/cycles:
+    get:
+      tags: [sections]
+      operationId: getCycles
+      summary: Orchestrate cycles in flight
+      responses:
+        "200":
+          description: Cycle state per tracked repo
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CycleState"
+
+  /api/v1/prs:
+    get:
+      tags: [sections]
+      operationId: getPrs
+      summary: PRs grouped by repo and status
+      responses:
+        "200":
+          description: PR groups
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PrGroup"
+
+  /api/v1/findings:
+    get:
+      tags: [sections]
+      operationId: getFindings
+      summary: Idle findings inbox
+      responses:
+        "200":
+          description: All findings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Finding"
+
+  /api/v1/pod:
+    get:
+      tags: [sections]
+      operationId: getPod
+      summary: Pod and tmux session health
+      responses:
+        "200":
+          description: Pod status per host
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PodStatus"
+
+  /api/v1/cadence:
+    get:
+      tags: [sections]
+      operationId: getCadence
+      summary: Cadence staff render per repo
+      responses:
+        "200":
+          description: Cadence data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CadenceRender"
+
+  /api/v1/cron:
+    get:
+      tags: [sections]
+      operationId: getCron
+      summary: Machine-wide cron schedule
+      responses:
+        "200":
+          description: Cron entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CronEntry"
+
+  /api/v1/ci:
+    get:
+      tags: [sections]
+      operationId: getCi
+      summary: Build and CI status per branch
+      responses:
+        "200":
+          description: CI entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CiEntry"
+
+  /api/v1/agents:
+    get:
+      tags: [sections]
+      operationId: getAgents
+      summary: Local-agent health
+      responses:
+        "200":
+          description: Local agent status per backend
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LocalAgentStatus"
+
+  /api/v1/drones:
+    get:
+      tags: [sections]
+      operationId: getDrones
+      summary: Multi-host drone status
+      responses:
+        "200":
+          description: Drone status per remote host
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DroneStatus"
+
+  /api/v1/commands:
+    post:
+      tags: [commands]
+      operationId: sendCommand
+      summary: Send a command to the daemon
+      description: >
+        Returns 202 Accepted immediately. Outcome arrives via SSE
+        `command_ack` or `command_error` events, matched by `id`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommandEnvelope"
+      responses:
+        "202":
+          description: Command accepted
+        "400":
+          description: Invalid command payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Daemon busy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  schemas:
+
+    # ── Meta ─────────────────────────────────────────────────────────────────
+
+    VersionInfo:
+      type: object
+      required: [protocol, daemon, min_outlet]
+      properties:
+        protocol:
+          type: string
+          description: SemVer of this API contract
+          example: "1.0.0"
+        daemon:
+          type: string
+          description: SemVer of the running conductr binary
+          example: "0.1.0"
+        min_outlet:
+          type: string
+          description: Minimum outlet version compatible with this protocol
+          example: "1.0.0"
+
+    # ── Snapshot ─────────────────────────────────────────────────────────────
+
+    DashboardSnapshot:
+      type: object
+      required:
+        - protocol
+        - generated_at
+        - cycles
+        - pr_groups
+        - findings
+        - pod
+        - cadence
+        - cron
+        - ci
+        - agents
+        - drones
+      properties:
+        protocol:
+          type: string
+          example: "1.0.0"
+        generated_at:
+          type: string
+          format: date-time
+        cycles:
+          type: array
+          items:
+            $ref: "#/components/schemas/CycleState"
+        pr_groups:
+          type: array
+          items:
+            $ref: "#/components/schemas/PrGroup"
+        findings:
+          type: array
+          items:
+            $ref: "#/components/schemas/Finding"
+        pod:
+          type: array
+          items:
+            $ref: "#/components/schemas/PodStatus"
+        cadence:
+          type: array
+          items:
+            $ref: "#/components/schemas/CadenceRender"
+        cron:
+          type: array
+          items:
+            $ref: "#/components/schemas/CronEntry"
+        ci:
+          type: array
+          items:
+            $ref: "#/components/schemas/CiEntry"
+        agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/LocalAgentStatus"
+        drones:
+          type: array
+          items:
+            $ref: "#/components/schemas/DroneStatus"
+
+    # ── Orchestrate cycles ────────────────────────────────────────────────────
+
+    CycleState:
+      type: object
+      required:
+        - repo
+        - as_of
+        - running
+        - merged
+        - triggered
+        - waiting
+        - blocked
+        - human
+        - pr_failing
+        - scope_overlap
+        - progress_made
+        - local_ci
+      properties:
+        repo:
+          type: string
+          example: "Luan-vP/conductr"
+        as_of:
+          type: string
+          format: date-time
+        running:
+          type: boolean
+        merged:
+          type: array
+          items:
+            type: integer
+        triggered:
+          type: array
+          items:
+            type: integer
+        waiting:
+          type: array
+          items:
+            type: integer
+        blocked:
+          type: array
+          items:
+            type: integer
+        human:
+          type: array
+          items:
+            type: integer
+        pr_failing:
+          type: array
+          items:
+            type: integer
+        scope_overlap:
+          type: array
+          items:
+            type: integer
+        progress_made:
+          type: boolean
+        local_ci:
+          type: array
+          items:
+            $ref: "#/components/schemas/PrLocalCiResult"
+
+    PrLocalCiResult:
+      type: object
+      required: [pr, status, commands]
+      properties:
+        pr:
+          type: integer
+        status:
+          $ref: "#/components/schemas/CiStatus"
+        commands:
+          type: array
+          items:
+            $ref: "#/components/schemas/CommandRun"
+
+    CommandRun:
+      type: object
+      required: [cmd, exit, stdout_tail, stderr_tail, duration_secs]
+      properties:
+        cmd:
+          type: string
+        exit:
+          type: integer
+        stdout_tail:
+          type: string
+        stderr_tail:
+          type: string
+        duration_secs:
+          type: number
+
+    # ── PRs ──────────────────────────────────────────────────────────────────
+
+    PrGroup:
+      type: object
+      required: [repo, prs]
+      properties:
+        repo:
+          type: string
+        prs:
+          type: array
+          items:
+            $ref: "#/components/schemas/PrSummary"
+
+    PrSummary:
+      type: object
+      required: [number, title, head_ref, state, ci, bucket]
+      properties:
+        number:
+          type: integer
+        title:
+          type: string
+        head_ref:
+          type: string
+        state:
+          type: string
+          enum: [open, merged, closed]
+        ci:
+          $ref: "#/components/schemas/CiStatus"
+        linked_issue:
+          type: integer
+          nullable: true
+        bucket:
+          $ref: "#/components/schemas/Bucket"
+
+    Bucket:
+      type: string
+      enum:
+        - ready
+        - pr_open
+        - pr_failing
+        - blocked
+        - triggered_waiting
+        - human
+        - already_closed
+        - scope_overlap
+
+    # ── Idle findings ─────────────────────────────────────────────────────────
+
+    Finding:
+      type: object
+      required: [id, title, body, severity, repo, resolved]
+      properties:
+        id:
+          type: string
+          description: Stable fingerprint (severity:crate:slug)
+        title:
+          type: string
+        body:
+          type: string
+        severity:
+          type: string
+          enum: [architecture, quality, coverage]
+        repo:
+          type: string
+        filed_issue:
+          type: integer
+          nullable: true
+        filed_at:
+          type: string
+          format: date-time
+          nullable: true
+        resolved:
+          type: boolean
+
+    # ── Pod health ────────────────────────────────────────────────────────────
+
+    PodStatus:
+      type: object
+      required: [host, as_of, sessions, slot_utilisation]
+      properties:
+        host:
+          type: string
+          description: '"local" or drone name'
+        as_of:
+          type: string
+          format: date-time
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionStatus"
+        slot_utilisation:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/SlotUtilisation"
+
+    SessionStatus:
+      type: object
+      required: [name, created, last_activity, windows, attached, health, idle_seconds]
+      properties:
+        name:
+          type: string
+        created:
+          type: string
+          format: date-time
+        last_activity:
+          type: string
+          format: date-time
+        windows:
+          type: integer
+        attached:
+          type: boolean
+        cwd:
+          type: string
+          nullable: true
+        health:
+          $ref: "#/components/schemas/Health"
+        idle_seconds:
+          type: integer
+        role:
+          type: string
+          nullable: true
+
+    Health:
+      oneOf:
+        - $ref: "#/components/schemas/HealthIdle"
+        - $ref: "#/components/schemas/HealthWorking"
+        - $ref: "#/components/schemas/HealthCrashed"
+        - $ref: "#/components/schemas/HealthUnknown"
+      discriminator:
+        propertyName: kind
+
+    HealthIdle:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [idle]
+        last_message:
+          type: string
+          nullable: true
+        tokens:
+          type: string
+          nullable: true
+
+    HealthWorking:
+      type: object
+      required: [kind, activity]
+      properties:
+        kind:
+          type: string
+          enum: [working]
+        activity:
+          type: string
+
+    HealthCrashed:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [crashed]
+        last_shell_line:
+          type: string
+          nullable: true
+
+    HealthUnknown:
+      type: object
+      required: [kind, reason]
+      properties:
+        kind:
+          type: string
+          enum: [unknown]
+        reason:
+          type: string
+
+    SlotUtilisation:
+      type: object
+      required: [used, cap]
+      properties:
+        used:
+          type: integer
+        cap:
+          type: integer
+
+    # ── Cadence ───────────────────────────────────────────────────────────────
+
+    CadenceRender:
+      type: object
+      required: [repo, as_of, prs, ci_runs, ascii_staff]
+      properties:
+        repo:
+          type: string
+        as_of:
+          type: string
+          format: date-time
+        prs:
+          type: array
+          items:
+            $ref: "#/components/schemas/TempoPrRow"
+        ci_runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/CiRunRow"
+        ascii_staff:
+          type: string
+
+    TempoPrRow:
+      type: object
+      required: [number, title, complexity, opened, closed, merged, duration_minutes]
+      properties:
+        number:
+          type: integer
+        title:
+          type: string
+        phrase:
+          type: string
+          nullable: true
+        chord:
+          type: string
+          nullable: true
+        complexity:
+          type: string
+          enum: [XS, S, M, L]
+        opened:
+          type: string
+          format: date-time
+        closed:
+          type: string
+          format: date-time
+        merged:
+          type: boolean
+        duration_minutes:
+          type: number
+
+    CiRunRow:
+      type: object
+      required: [pr, minutes, ts]
+      properties:
+        pr:
+          type: integer
+        minutes:
+          type: number
+        ts:
+          type: string
+          format: date-time
+
+    # ── Cron ─────────────────────────────────────────────────────────────────
+
+    CronEntry:
+      type: object
+      required: [id, description, command, schedule, enabled]
+      properties:
+        id:
+          type: string
+        description:
+          type: string
+        command:
+          type: string
+        schedule:
+          type: string
+          description: Cron expression (5-field)
+        next_run:
+          type: string
+          format: date-time
+          nullable: true
+        last_run:
+          type: string
+          format: date-time
+          nullable: true
+        last_exit:
+          type: integer
+          nullable: true
+        enabled:
+          type: boolean
+
+    # ── CI status ─────────────────────────────────────────────────────────────
+
+    CiStatus:
+      type: string
+      enum: [passing, failing, pending, unknown]
+
+    CiEntry:
+      type: object
+      required: [repo, branch, status, mode, updated_at]
+      properties:
+        repo:
+          type: string
+        branch:
+          type: string
+        pr:
+          type: integer
+          nullable: true
+        status:
+          $ref: "#/components/schemas/CiStatus"
+        mode:
+          type: string
+          enum: [local, prefer_local, prefer_github, github]
+        local:
+          $ref: "#/components/schemas/LocalCiReport"
+          nullable: true
+        github:
+          $ref: "#/components/schemas/CiStatus"
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+
+    LocalCiReport:
+      type: object
+      required: [status, commands]
+      properties:
+        status:
+          $ref: "#/components/schemas/CiStatus"
+        commands:
+          type: array
+          items:
+            $ref: "#/components/schemas/CommandRun"
+
+    # ── Local-agent ───────────────────────────────────────────────────────────
+
+    LocalAgentStatus:
+      type: object
+      required: [backend, reachable, models, checked_at]
+      properties:
+        backend:
+          type: string
+          enum: [ollama, llamacpp]
+        reachable:
+          type: boolean
+        models:
+          type: array
+          items:
+            type: string
+        active_model:
+          type: string
+          nullable: true
+        checked_at:
+          type: string
+          format: date-time
+        error:
+          type: string
+          nullable: true
+
+    # ── Drone ─────────────────────────────────────────────────────────────────
+
+    DroneStatus:
+      type: object
+      required: [name, host, provider, reachable, checked_at, running, slots]
+      properties:
+        name:
+          type: string
+        host:
+          type: string
+        provider:
+          type: string
+          enum: [aws, hetzner, digitalocean, local]
+        reachable:
+          type: boolean
+        checked_at:
+          type: string
+          format: date-time
+        running:
+          type: array
+          items:
+            type: string
+        slots:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/SlotUtilisation"
+
+    # ── Commands ─────────────────────────────────────────────────────────────
+
+    CommandEnvelope:
+      type: object
+      required: [id, command, payload]
+      properties:
+        id:
+          type: string
+          description: Client-generated idempotency key
+        command:
+          type: string
+          enum:
+            - trigger_orchestrate
+            - trigger_idle
+            - approve_pr
+            - reject_pr
+            - open_session
+            - file_issue
+            - switch_preset
+            - edit_config
+        payload:
+          oneOf:
+            - $ref: "#/components/schemas/TriggerOrchestratePayload"
+            - $ref: "#/components/schemas/TriggerIdlePayload"
+            - $ref: "#/components/schemas/ApprovePrPayload"
+            - $ref: "#/components/schemas/RejectPrPayload"
+            - $ref: "#/components/schemas/OpenSessionPayload"
+            - $ref: "#/components/schemas/FileIssuePayload"
+            - $ref: "#/components/schemas/SwitchPresetPayload"
+            - $ref: "#/components/schemas/EditConfigPayload"
+
+    TriggerOrchestratePayload:
+      type: object
+      required: [repo]
+      properties:
+        repo:
+          type: string
+        dry_run:
+          type: boolean
+          default: false
+
+    TriggerIdlePayload:
+      type: object
+      required: [repo]
+      properties:
+        repo:
+          type: string
+        scan_types:
+          type: array
+          items:
+            type: string
+            enum: [architecture, quality, coverage]
+
+    ApprovePrPayload:
+      type: object
+      required: [repo, pr]
+      properties:
+        repo:
+          type: string
+        pr:
+          type: integer
+
+    RejectPrPayload:
+      type: object
+      required: [repo, pr]
+      properties:
+        repo:
+          type: string
+        pr:
+          type: integer
+        reason:
+          type: string
+
+    OpenSessionPayload:
+      type: object
+      required: [session]
+      properties:
+        session:
+          type: string
+        cwd:
+          type: string
+
+    FileIssuePayload:
+      type: object
+      required: [repo, title, body]
+      properties:
+        repo:
+          type: string
+        title:
+          type: string
+        body:
+          type: string
+        labels:
+          type: array
+          items:
+            type: string
+        from_finding:
+          type: string
+          nullable: true
+
+    SwitchPresetPayload:
+      type: object
+      required: [repo, preset]
+      properties:
+        repo:
+          type: string
+        preset:
+          type: string
+
+    EditConfigPayload:
+      type: object
+      required: [scope, patch]
+      properties:
+        scope:
+          type: string
+          enum: [global, repo]
+        repo:
+          type: string
+        patch:
+          type: object
+          additionalProperties: true
+
+    # ── Errors ────────────────────────────────────────────────────────────────
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, retryable]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            retryable:
+              type: boolean
+            detail:
+              type: object
+              additionalProperties: true
