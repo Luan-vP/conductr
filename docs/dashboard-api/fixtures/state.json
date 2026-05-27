@@ -1,0 +1,127 @@
+{
+  "protocol": "1.0.0",
+  "impl": "0.4.2",
+  "host": "luan-desk",
+  "snapshot_at": "2026-05-27T13:42:08Z",
+  "data": {
+    "repos": [
+      {
+        "slug": { "owner": "luan-vp", "repo": "conductr" },
+        "tag": "conductr",
+        "local_path": "/home/luan/conductr",
+        "status": "active",
+        "cadence": {
+          "orchestrate": "*/30 * * * *",
+          "idle": "17 * * * *"
+        },
+        "maturity": "L3Architected"
+      },
+      {
+        "slug": { "owner": "luan-vp", "repo": "conductr-dashboard-vscode" },
+        "tag": "conductr-dashboard-vscode",
+        "local_path": "/home/luan/conductr-dashboard-vscode",
+        "status": "active",
+        "cadence": { "orchestrate": "*/45 * * * *" },
+        "maturity": "L1Tested"
+      }
+    ],
+    "cycles": [
+      {
+        "repo": { "owner": "luan-vp", "repo": "conductr" },
+        "started_at": "2026-05-27T13:30:00Z",
+        "finished_at": null,
+        "trigger": "cron",
+        "state": "running",
+        "beats": [
+          { "name": "architect",   "state": "done",    "started_at": "2026-05-27T13:30:01Z", "finished_at": "2026-05-27T13:32:14Z", "pr_number": null },
+          { "name": "implementer", "state": "running", "started_at": "2026-05-27T13:32:14Z", "finished_at": null,                   "pr_number": 188  },
+          { "name": "reviewer",    "state": "queued",  "started_at": null,                   "finished_at": null,                   "pr_number": null }
+        ],
+        "pr_numbers": [188]
+      }
+    ],
+    "prs_by_repo": [
+      {
+        "repo": { "owner": "luan-vp", "repo": "conductr" },
+        "mergeable_green": [
+          {
+            "number": 188,
+            "title": "feat(safety): SafetyPreset enum + maturity resolver",
+            "body": "Implements #172.\n\nAdds the SafetyPreset enum...",
+            "head_ref": "claude/172-safety-schema",
+            "state": "Open",
+            "ci": "Success",
+            "linked_issue": 172
+          }
+        ],
+        "mergeable_red": [],
+        "conflicting": [],
+        "draft": []
+      }
+    ],
+    "findings": [
+      {
+        "title": "conductr-pod missing port trait",
+        "body": "`crates/conductr-pod/src/lib.rs` calls `gh_cli.list_open_prs` directly; should go through a port.",
+        "severity": "Architecture",
+        "fingerprint": "arch-pod-direct-gh-2026-05",
+        "issue_number": 187,
+        "repo": { "owner": "luan-vp", "repo": "conductr" },
+        "first_seen": "2026-05-26T17:01:42Z"
+      }
+    ],
+    "pod": {
+      "sessions": [
+        {
+          "session": {
+            "name": "conductr-orchestrate-1",
+            "created": "2026-05-27T08:00:00Z",
+            "last_activity": "2026-05-27T13:41:50Z",
+            "windows": 3,
+            "attached": false,
+            "cwd": "/home/luan/conductr"
+          },
+          "health": { "kind": "Working", "activity": "running implementer beat" },
+          "idle_seconds": 18,
+          "tail": [
+            "$ cargo build --workspace",
+            "   Compiling conductr-core v0.4.2",
+            "   Compiling conductr-orchestrate v0.4.2"
+          ]
+        }
+      ]
+    },
+    "cron": [
+      {
+        "expression": "*/30 * * * *",
+        "command": "conductr orchestrate run luan-vp/conductr",
+        "marker": "# conductr-cron: orchestrate luan-vp/conductr",
+        "next_fire": "2026-05-27T14:00:00Z"
+      },
+      {
+        "expression": "17 * * * *",
+        "command": "conductr idle scan luan-vp/conductr",
+        "marker": "# conductr-cron: idle luan-vp/conductr",
+        "next_fire": "2026-05-27T14:17:00Z"
+      }
+    ],
+    "local_agents": [
+      {
+        "kind": "ollama",
+        "endpoint": "http://127.0.0.1:11434",
+        "reachable": true,
+        "latency_ms": 12,
+        "models": ["llama3:8b", "qwen2.5-coder:32b"],
+        "last_checked": "2026-05-27T13:42:00Z"
+      },
+      {
+        "kind": "pi",
+        "endpoint": "https://pi.dev/v1",
+        "reachable": false,
+        "latency_ms": null,
+        "models": [],
+        "last_checked": "2026-05-27T13:42:00Z"
+      }
+    ]
+  }
+}

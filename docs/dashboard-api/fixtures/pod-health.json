@@ -1,0 +1,72 @@
+{
+  "protocol": "1.0.0",
+  "impl": "0.4.2",
+  "host": "luan-desk",
+  "snapshot_at": "2026-05-27T13:42:08Z",
+  "data": {
+    "sessions": [
+      {
+        "session": {
+          "name": "conductr-orchestrate-1",
+          "created": "2026-05-27T08:00:00Z",
+          "last_activity": "2026-05-27T13:41:50Z",
+          "windows": 3,
+          "attached": false,
+          "cwd": "/home/luan/conductr"
+        },
+        "health": {
+          "kind": "Working",
+          "activity": "running implementer beat"
+        },
+        "idle_seconds": 18,
+        "tail": [
+          "$ cargo build --workspace",
+          "   Compiling conductr-core v0.4.2",
+          "   Compiling conductr-orchestrate v0.4.2",
+          "    Finished `dev` profile in 14.32s"
+        ]
+      },
+      {
+        "session": {
+          "name": "conductr-idle-1",
+          "created": "2026-05-27T11:17:00Z",
+          "last_activity": "2026-05-27T11:42:08Z",
+          "windows": 1,
+          "attached": false,
+          "cwd": "/home/luan/conductr"
+        },
+        "health": {
+          "kind": "Idle",
+          "last_message": "scan complete; 0 new findings",
+          "tokens": 4218
+        },
+        "idle_seconds": 7200,
+        "tail": [
+          "✓ architect review: 0 findings",
+          "✓ clippy: 0 warnings",
+          "✓ coverage: 82.4% (unchanged)"
+        ]
+      },
+      {
+        "session": {
+          "name": "conductr-tasks-1",
+          "created": "2026-05-26T22:13:00Z",
+          "last_activity": "2026-05-26T22:14:11Z",
+          "windows": 1,
+          "attached": false,
+          "cwd": "/home/luan/conductr"
+        },
+        "health": {
+          "kind": "Crashed",
+          "last_shell_line": "thread 'main' panicked at 'beads adapter timed out', crates/conductr-adapters/src/beads.rs:142:5"
+        },
+        "idle_seconds": 55677,
+        "tail": [
+          "$ conductr tasks sync",
+          "syncing beads...",
+          "thread 'main' panicked at 'beads adapter timed out'"
+        ]
+      }
+    ]
+  }
+}
