@@ -5,6 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use conductr_core::types::CiMode;
+use conductr_core::SafetyPreset;
 use serde::{Deserialize, Serialize};
 
 // ── [local] ───────────────────────────────────────────────────────────────────
@@ -167,6 +168,32 @@ impl Default for OrchestrateSection {
     }
 }
 
+// ── [safety] ─────────────────────────────────────────────────────────────────
+
+/// Per-routine preset overrides stored under `[safety.overrides]`.
+#[derive(Debug, Deserialize, Default)]
+pub struct SafetyOverridesSection {
+    pub architect: Option<SafetyPreset>,
+    pub implementer: Option<SafetyPreset>,
+    pub reviewer: Option<SafetyPreset>,
+    pub tester: Option<SafetyPreset>,
+    pub security: Option<SafetyPreset>,
+    #[serde(rename = "doc-writer")]
+    pub doc_writer: Option<SafetyPreset>,
+    #[serde(rename = "idle-sweeper")]
+    pub idle_sweeper: Option<SafetyPreset>,
+}
+
+/// The `[safety]` section of `.conductr`.
+#[derive(Debug, Deserialize, Default)]
+pub struct SafetySection {
+    /// User-pinned preset. When absent, the maturity-derived default applies.
+    pub preset: Option<SafetyPreset>,
+    /// Per-routine preset overrides (`[safety.overrides]`).
+    #[serde(default)]
+    pub overrides: SafetyOverridesSection,
+}
+
 // ── RawConfig ─────────────────────────────────────────────────────────────────
 
 
@@ -219,6 +246,8 @@ struct RawConfig {
     pub architecture: ArchitectureSection,
     #[serde(default)]
     pub idle: IdleSection,
+    #[serde(default)]
+    pub safety: SafetySection,
 }
 
 /// Read `project_tag` from `.conductr` in `repo_path`.
@@ -379,6 +408,69 @@ pub fn read_project_repo(repo_path: &Path) -> Result<Option<String>> {
     read_raw(repo_path).map(|c| c.repo)
 }
 
+/// Read the `[safety]` section (including `[safety.overrides]`) from `.conductr`.
+/// Returns defaults when the file or section is absent.
+pub fn read_safety_section(repo_path: &Path) -> Result<SafetySection> {
+    read_raw(repo_path).map(|c| c.safety)
+}
+
+/// Write `[safety] preset = "<preset>"` to `.conductr`, preserving all other content.
+///
+/// If no `[safety]` section exists it is appended; if the key already exists it is
+/// updated in-place.
+pub fn write_safety_preset(repo_path: &Path, preset: SafetyPreset) -> Result<()> {
+    let dot_conductr = repo_path.join(".conductr");
+    let content = if dot_conductr.exists() {
+        std::fs::read_to_string(&dot_conductr)
+            .with_context(|| format!("reading {}", dot_conductr.display()))?
+    } else {
+        String::new()
+    };
+    let updated = patch_safety_preset(&content, preset.as_str());
+    std::fs::write(&dot_conductr, updated)
+        .with_context(|| format!("writing {}", dot_conductr.display()))
+}
+
+/// Write a per-routine preset override to `[safety.overrides]` in `.conductr`.
+///
+/// If no `[safety.overrides]` section exists it is inserted (after `[safety]` if
+/// present, otherwise appended); if the role key already exists it is updated.
+pub fn write_safety_override(
+    repo_path: &Path,
+    role: conductr_core::SafetyRole,
+    preset: SafetyPreset,
+) -> Result<()> {
+    let dot_conductr = repo_path.join(".conductr");
+    let content = if dot_conductr.exists() {
+        std::fs::read_to_string(&dot_conductr)
+            .with_context(|| format!("reading {}", dot_conductr.display()))?
+    } else {
+        String::new()
+    };
+    let updated = patch_safety_override(&content, role.as_str(), Some(preset.as_str()));
+    std::fs::write(&dot_conductr, updated)
+        .with_context(|| format!("writing {}", dot_conductr.display()))
+}
+
+/// Remove a per-routine preset override from `[safety.overrides]` in `.conductr`.
+///
+/// If the key is not present this is a no-op.
+pub fn clear_safety_override(
+    repo_path: &Path,
+    role: conductr_core::SafetyRole,
+) -> Result<()> {
+    let dot_conductr = repo_path.join(".conductr");
+    let content = if dot_conductr.exists() {
+        std::fs::read_to_string(&dot_conductr)
+            .with_context(|| format!("reading {}", dot_conductr.display()))?
+    } else {
+        return Ok(());
+    };
+    let updated = patch_safety_override(&content, role.as_str(), None);
+    std::fs::write(&dot_conductr, updated)
+        .with_context(|| format!("writing {}", dot_conductr.display()))
+}
+
 /// Update `[idle].last_module` and `[idle].last_run` in `.conductr` while
 /// preserving all other content (comments, other sections).
 pub fn write_idle_state(repo_path: &Path, last_module: &str, last_run: &str) -> Result<()> {
@@ -465,6 +557,112 @@ fn patch_idle_section(content: &str, last_module: &str, last_run: &str) -> Strin
         out.push_str(&lm_line);
         out.push('\n');
         out.push_str(&lr_line);
+        out.push('\n');
+        out
+    }
+}
+
+/// Patch `[safety] preset = "<value>"` in the raw TOML string, preserving
+/// comments and other sections.
+fn patch_safety_preset(content: &str, value: &str) -> String {
+    let preset_line = format!("preset = \"{value}\"");
+    patch_section_key(content, "[safety]", "preset", Some(&preset_line))
+}
+
+/// Patch (or remove) a role key in `[safety.overrides]`.
+///
+/// `value = Some(...)` → upsert the key.
+/// `value = None`      → delete the key (clear override).
+fn patch_safety_override(content: &str, role: &str, value: Option<&str>) -> String {
+    let new_line = value.map(|v| format!("{role:<12} = \"{v}\""));
+    patch_section_key(content, "[safety.overrides]", role, new_line.as_deref())
+}
+
+/// Generic helper: upsert or delete `key` inside `section_header`.
+///
+/// - If `new_line` is `Some(s)`, the key is set to `s` (insert if absent, replace if present).
+/// - If `new_line` is `None`, the key line is removed (if present).
+/// - If the section does not exist and `new_line` is `Some`, the section is appended.
+///
+/// Preserves trailing newline, comments, and all other sections.
+fn patch_section_key(
+    content: &str,
+    section_header: &str,
+    key: &str,
+    new_line: Option<&str>,
+) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let trailing_newline = content.ends_with('\n');
+
+    // Find the target section and where the next section starts.
+    let mut section_start: Option<usize> = None;
+    let mut next_section: Option<usize> = None;
+
+    for (i, &line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if t == section_header {
+            section_start = Some(i);
+        } else if section_start.is_some()
+            && t.starts_with('[')
+            && !t.starts_with("[[")
+            && t.ends_with(']')
+            && t != section_header
+        {
+            next_section = Some(i);
+            break;
+        }
+    }
+
+    if let Some(start) = section_start {
+        let end = next_section.unwrap_or(lines.len());
+
+        let mut result: Vec<String> = Vec::with_capacity(lines.len() + 1);
+        let mut key_found = false;
+
+        for (i, &line) in lines.iter().enumerate() {
+            if i >= start + 1 && i < end {
+                let t = line.trim();
+                if t.starts_with(key) && t[key.len()..].trim_start().starts_with('=') {
+                    // Existing key — replace or delete.
+                    if let Some(replacement) = new_line {
+                        result.push(replacement.to_string());
+                    }
+                    // None → omit (delete)
+                    key_found = true;
+                } else {
+                    result.push(line.to_string());
+                }
+            } else {
+                result.push(line.to_string());
+            }
+        }
+
+        // Insert if key was absent and we have a value.
+        if !key_found {
+            if let Some(replacement) = new_line {
+                let insert_pos = start + 1;
+                result.insert(insert_pos, replacement.to_string());
+            }
+        }
+
+        let mut out = result.join("\n");
+        if trailing_newline {
+            out.push('\n');
+        }
+        out
+    } else {
+        // Section doesn't exist yet.
+        if new_line.is_none() {
+            return content.to_string();
+        }
+        let mut out = content.to_string();
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+        out.push_str(section_header);
+        out.push('\n');
+        out.push_str(new_line.unwrap());
         out.push('\n');
         out
     }
@@ -864,5 +1062,145 @@ last_run    = "2026-05-11T08:00:00Z"
         assert!(out.contains("[cadence]"));
         assert!(out.contains("[band]"));
         assert!(out.contains("last_module = \"conductr-mail\""));
+    }
+
+    // ── [safety] ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parses_safety_section_with_preset() {
+        let raw = r#"
+[safety]
+preset = "strict"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.safety.preset, Some(SafetyPreset::Strict));
+        assert!(cfg.safety.overrides.architect.is_none());
+    }
+
+    #[test]
+    fn parses_safety_overrides() {
+        let raw = r#"
+[safety]
+preset = "fast"
+
+[safety.overrides]
+architect   = "strict"
+implementer = "feral"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.safety.preset, Some(SafetyPreset::Fast));
+        assert_eq!(cfg.safety.overrides.architect, Some(SafetyPreset::Strict));
+        assert_eq!(cfg.safety.overrides.implementer, Some(SafetyPreset::Feral));
+        assert!(cfg.safety.overrides.reviewer.is_none());
+    }
+
+    #[test]
+    fn safety_section_defaults_when_absent() {
+        let raw = r#"project_tag = "test""#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert!(cfg.safety.preset.is_none());
+        assert!(cfg.safety.overrides.architect.is_none());
+    }
+
+    #[test]
+    fn safety_overrides_doc_writer_and_idle_sweeper() {
+        let raw = r#"
+[safety.overrides]
+doc-writer   = "bureaucratic"
+idle-sweeper = "unhinged"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.safety.overrides.doc_writer, Some(SafetyPreset::Bureaucratic));
+        assert_eq!(cfg.safety.overrides.idle_sweeper, Some(SafetyPreset::Unhinged));
+    }
+
+    #[test]
+    fn patch_safety_preset_inserts_when_missing() {
+        let content = "project_tag = \"foo\"\n";
+        let out = patch_safety_preset(content, "strict");
+        assert!(out.contains("[safety]"), "should insert [safety] section");
+        assert!(out.contains("preset = \"strict\""));
+        assert!(out.contains("project_tag = \"foo\""), "original content preserved");
+    }
+
+    #[test]
+    fn patch_safety_preset_updates_existing() {
+        let content = "[safety]\npreset = \"feral\"\n";
+        let out = patch_safety_preset(content, "fast");
+        assert!(out.contains("preset = \"fast\""));
+        assert!(!out.contains("preset = \"feral\""));
+    }
+
+    #[test]
+    fn patch_safety_preset_preserves_overrides_section() {
+        let content = "[safety]\npreset = \"fast\"\n\n[safety.overrides]\narchitect = \"strict\"\n";
+        let out = patch_safety_preset(content, "strict");
+        assert!(out.contains("[safety.overrides]"));
+        assert!(out.contains("architect = \"strict\""));
+        assert!(out.contains("preset = \"strict\""));
+    }
+
+    #[test]
+    fn patch_safety_preset_preserves_surrounding_sections() {
+        let content = "[band]\nhuman_assignee = \"Luan-vP\"\n[safety]\npreset = \"fast\"\n[idle]\nlast_run = \"\"\n";
+        let out = patch_safety_preset(content, "bureaucratic");
+        assert!(out.contains("[band]"));
+        assert!(out.contains("[idle]"));
+        assert!(out.contains("preset = \"bureaucratic\""));
+    }
+
+    #[test]
+    fn patch_safety_override_inserts_when_no_section() {
+        let content = "project_tag = \"foo\"\n";
+        let out = patch_safety_override(content, "architect", Some("strict"));
+        assert!(out.contains("[safety.overrides]"));
+        assert!(out.contains("architect"));
+        assert!(out.contains("\"strict\""));
+    }
+
+    #[test]
+    fn patch_safety_override_updates_existing_key() {
+        let content = "[safety.overrides]\narchitect    = \"fast\"\n";
+        let out = patch_safety_override(content, "architect", Some("strict"));
+        assert!(out.contains("\"strict\""));
+        assert!(!out.contains("\"fast\""));
+    }
+
+    #[test]
+    fn patch_safety_override_deletes_key() {
+        let content = "[safety.overrides]\narchitect    = \"strict\"\nimplementer  = \"fast\"\n";
+        let out = patch_safety_override(content, "architect", None);
+        assert!(!out.contains("architect"), "cleared key must be removed");
+        assert!(out.contains("implementer"), "other keys preserved");
+    }
+
+    #[test]
+    fn patch_safety_override_clear_noop_when_absent() {
+        let content = "project_tag = \"foo\"\n";
+        let out = patch_safety_override(content, "architect", None);
+        assert_eq!(out, content, "no-op when section and key absent");
+    }
+
+    #[test]
+    fn safety_round_trip_read_write() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path();
+
+        // Start: no safety section
+        std::fs::write(path.join(".conductr"), "project_tag = \"foo\"\n").unwrap();
+
+        write_safety_preset(path, SafetyPreset::Strict).unwrap();
+        let section = read_safety_section(path).unwrap();
+        assert_eq!(section.preset, Some(SafetyPreset::Strict));
+
+        write_safety_override(path, conductr_core::SafetyRole::Architect, SafetyPreset::Bureaucratic).unwrap();
+        let section = read_safety_section(path).unwrap();
+        assert_eq!(section.overrides.architect, Some(SafetyPreset::Bureaucratic));
+
+        clear_safety_override(path, conductr_core::SafetyRole::Architect).unwrap();
+        let section = read_safety_section(path).unwrap();
+        assert!(section.overrides.architect.is_none(), "override should be cleared");
+        assert_eq!(section.preset, Some(SafetyPreset::Strict), "global preset preserved");
     }
 }
