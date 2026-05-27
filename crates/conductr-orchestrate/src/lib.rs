@@ -16,6 +16,7 @@ pub mod classifier;
 pub mod deps;
 pub mod dispatch;
 pub mod graph;
+pub mod isolation;
 pub mod orchestrator;
 pub mod tempo;
 pub mod types;
