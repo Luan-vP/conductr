@@ -1,0 +1,108 @@
+#cloud-config
+# Cloud-init provisioning for dev orchestrator VM
+# Installs: Docker, k3s, Tilt, Node 20, Python 3.12 + uv, Claude Code, Playwright deps, gh CLI
+
+users:
+  - name: dev
+    groups: [sudo, docker]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - ${SSH_PUBLIC_KEY}
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - git
+  - jq
+  - unzip
+  - age
+  - build-essential
+  - libssl-dev
+  # Playwright system dependencies
+  - libnss3
+  - libnspr4
+  - libatk1.0-0
+  - libatk-bridge2.0-0
+  - libcups2
+  - libdrm2
+  - libxkbcommon0
+  - libxcomposite1
+  - libxdamage1
+  - libxfixes3
+  - libxrandr2
+  - libgbm1
+  - libpango-1.0-0
+  - libcairo2
+  - libasound2
+  - libatspi2.0-0
+  - libwayland-client0
+
+runcmd:
+  # --- Docker (official repo) ---
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - systemctl enable docker
+  - systemctl start docker
+  - usermod -aG docker dev
+
+  # --- k3s (single-node, no traefik — Tilt handles port-forwarding) ---
+  - curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -
+  - mkdir -p /home/dev/.kube
+  - cp /etc/rancher/k3s/k3s.yaml /home/dev/.kube/config
+  - chown -R dev:dev /home/dev/.kube
+  - sed -i 's/127.0.0.1/localhost/' /home/dev/.kube/config
+  - chmod 600 /home/dev/.kube/config
+
+  # --- Node.js 20 (via NodeSource) ---
+  - curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  - apt-get install -y nodejs
+  - npm install -g npm@latest
+
+  # --- Python 3.12 + uv ---
+  - add-apt-repository -y ppa:deadsnakes/ppa
+  - apt-get update
+  - apt-get install -y python3.12 python3.12-venv python3.12-dev
+  - curl -LsSf https://astral.sh/uv/install.sh | sudo -u dev sh
+  - echo 'export PATH="/home/dev/.local/bin:$PATH"' >> /home/dev/.bashrc
+
+  # --- Tilt ---
+  - curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
+
+  # --- Claude Code CLI ---
+  - npm install -g @anthropic-ai/claude-code
+
+  # --- gh CLI ---
+  - curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+  - chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+  - apt-get update
+  - apt-get install -y gh
+
+  # --- Playwright browsers (as dev user) ---
+  - sudo -u dev npx playwright install --with-deps chromium
+
+  # --- Workspace directory ---
+  - mkdir -p /home/dev/repo
+  - chown dev:dev /home/dev/repo
+
+  # --- UFW firewall: SSH only ---
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow ssh
+  - ufw --force enable
+
+  # --- Signal completion ---
+  - touch /home/dev/.cloud-init-complete
+
+final_message: "Cloud-init provisioning complete after $UPTIME seconds"
