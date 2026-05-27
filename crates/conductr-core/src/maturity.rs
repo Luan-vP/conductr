@@ -17,13 +17,23 @@ impl MaturityCheck {
 }
 
 /// The six maturity levels a repository can reach.
+///
+/// Wire format: `"L0"`–`"L5"`. The variant labels (e.g. `Bootstrap`,
+/// `Architected`) are mnemonic and may shift over time; the on-wire
+/// identity is the level number only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MaturityLevel {
+    #[serde(rename = "L0")]
     L0Bootstrap,
+    #[serde(rename = "L1")]
     L1Tested,
+    #[serde(rename = "L2")]
     L2GitFlow,
+    #[serde(rename = "L3")]
     L3Architected,
+    #[serde(rename = "L4")]
     L4Skilled,
+    #[serde(rename = "L5")]
     L5Orchestrated,
 }
 

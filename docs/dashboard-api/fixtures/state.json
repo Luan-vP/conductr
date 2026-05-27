@@ -14,7 +14,7 @@
           "orchestrate": "*/30 * * * *",
           "idle": "17 * * * *"
         },
-        "maturity": "L3Architected"
+        "maturity": "L3"
       },
       {
         "slug": { "owner": "luan-vp", "repo": "conductr-dashboard-vscode" },
@@ -22,7 +22,7 @@
         "local_path": "/home/luan/conductr-dashboard-vscode",
         "status": "active",
         "cadence": { "orchestrate": "*/45 * * * *" },
-        "maturity": "L1Tested"
+        "maturity": "L1"
       }
     ],
     "cycles": [

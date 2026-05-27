@@ -101,6 +101,28 @@ Where a type already exists in `crates/conductr-core/src/types.rs`,
 it is **reused as-is** rather than parallel-defined. Those reuses
 are flagged with `(reused from conductr-core)`.
 
+### 4.0 Wire conventions for enums
+
+Rust enums on the wire use the **stable short identifier**, not the
+mnemonic Rust variant name. The mnemonic may shift as the codebase
+evolves; the wire value will not. `MaturityLevel` is the canonical
+example:
+
+| Rust variant      | Wire value |
+|-------------------|------------|
+| `L0Bootstrap`     | `"L0"`     |
+| `L1Tested`        | `"L1"`     |
+| `L2GitFlow`       | `"L2"`     |
+| `L3Architected`   | `"L3"`     |
+| `L4Skilled`       | `"L4"`     |
+| `L5Orchestrated`  | `"L5"`     |
+
+This is enforced via `#[serde(rename = "...")]`. New enums added to
+the contract follow the same pattern: pick a short stable
+identifier on the wire side, keep the human-readable name in Rust.
+Tagged enums (e.g. `Health`, `MailKind`) use `#[serde(tag = "kind")]`
+with the same stable-identifier rule for the `kind` value.
+
 ### 4.1 Repo / project registry
 
 `RepoEntry` — one per active project in `~/.conductr`.
