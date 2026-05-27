@@ -8,6 +8,13 @@ bug.
 
 Tracked under #146; meta-tracker #181.
 
+**Status:** v1.0.0 — ratified. The wire format below is the contract
+daemon and outlets implement. Breaking changes require a protocol
+major bump and a coordinated outlet release (see §2). Items
+explicitly out of scope for v1 — federation (#152), the write
+command surface (§7), the open questions in §14 — are deferred to
+v2 and do not block v1 shipping.
+
 ## 0. Why this exists
 
 Multiple outlets need the same live snapshot of conductr state.
