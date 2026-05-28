@@ -62,6 +62,38 @@ The idle sweep calls `stale_agent_panes(sessions, in_flight_count)` to identify
 in-flight label was cleared). These sessions are killed before the next
 orchestrate pass so their slot indices are reclaimed.
 
+## Cron line shape (post-#196)
+
+`cadence sync` wraps `orchestrate` and `idle` in `conductr pod ensure-session` so the
+`conductr-<project_tag>` tmux session is created and has Claude running before the work begins.
+
+```
+# orchestrate
+*/30 * * * * bash -lc 'conductr pod ensure-session <tag> --then "conductr orchestrate --repo owner/repo --once"' >> ~/.local/share/conductr/orchestrate.log 2>&1
+
+# idle
+*/30 * * * * bash -lc 'conductr pod ensure-session <tag> --then "/idle"' >> ~/.local/share/conductr/idle.log 2>&1
+```
+
+`ensure-session` behaviour:
+
+| Session state   | Action                                              | Output token                    |
+| --------------- | --------------------------------------------------- | ------------------------------- |
+| Missing         | Create session, start Claude, wait for idle         | `session_missing_created`       |
+| Existing idle   | No-op                                               | `session_reused`                |
+| Existing crashed| Restart Claude, wait for idle                       | `session_missing_created`       |
+| Existing busy   | Skip `--then` (try again next cron fire)            | `target_stale_or_not_consuming` |
+
+`--then` dispatch rules:
+- `/`-prefixed → `tmux send-keys` into the live Claude session (skill dispatch for `/idle`)
+- anything else → `bash -c` subprocess (for `conductr orchestrate --repo X --once`)
+
+### Migration
+
+Re-running `cadence sync` on any project rewrites old cron lines to the new shape. The
+`merge()` function strips any existing `# conductr-cron: <tag>-*` blocks and appends the
+new ones, so no manual crontab editing is required.
+
 ## Timing
 
 | Event                         | Cadence    |
