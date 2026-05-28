@@ -8,6 +8,13 @@ bug.
 
 Tracked under #146; meta-tracker #181.
 
+**Status:** v1.0.0 — ratified. The wire format below is the contract
+daemon and outlets implement. Breaking changes require a protocol
+major bump and a coordinated outlet release (see §2). Items
+explicitly out of scope for v1 — federation (#152), the write
+command surface (§7), the open questions in §14 — are deferred to
+v2 and do not block v1 shipping.
+
 ## 0. Why this exists
 
 Multiple outlets need the same live snapshot of conductr state.
@@ -182,16 +189,17 @@ type PrGrouped = {
 
 ### 4.4 Idle findings
 
-`Finding` and `FindingSeverity` from `crates/conductr/src/idle.rs`
-move to `conductr-dashboard-core::model` (or
-`conductr-core::types`) and pick up `Serialize` / `Deserialize`.
-That's a small refactor; tracked as a sub-task of #149.
+`Finding` and `FindingSeverity` live in `conductr-core::types` and
+derive `Serialize` / `Deserialize`. The wire shape is what the daemon
+serves; the daemon is responsible for attaching the dashboard-only
+enrichment fields (`issue_number`, `repo`, `first_seen`) at
+serialization time.
 
 ```ts
 type Finding = {
   title: string;
   body: string;
-  severity: "Architecture" | "Quality" | "Coverage";
+  severity: "architecture" | "quality" | "coverage";
   fingerprint: string;       // deterministic, used for dedup
   issue_number: number | null;  // null if not yet filed
   repo: RepoSlug;
@@ -236,9 +244,19 @@ type StaffHit = {
 }
 ```
 
-The grammar choices (note vs hit, where duration comes from) are
-the subject of #72; this contract carries the shape but does not
-prescribe glyph semantics. Outlets render whatever `glyph` says.
+Glyph semantics are part of the protocol — outlets exhaustively
+switch on the four values and any new glyph requires a protocol
+major bump. #72 settles the cadence grammar within this set.
+
+| glyph  | shape                    | `duration_seconds` |
+|--------|--------------------------|--------------------|
+| `head` | sustained note          | required (> 0)     |
+| `rest` | explicit silence        | required (> 0)     |
+| `hit`  | percussion / instant    | `null`             |
+| `tied` | continuation of a `head` across the window edge | required (> 0) |
+
+A producer that needs a glyph not in this set must emit the closest
+fit and surface the detail in the row `label`, not invent a value.
 
 ### 4.7 Cron schedule (machine-wide)
 
