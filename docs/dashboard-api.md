@@ -189,16 +189,17 @@ type PrGrouped = {
 
 ### 4.4 Idle findings
 
-`Finding` and `FindingSeverity` from `crates/conductr/src/idle.rs`
-move to `conductr-dashboard-core::model` (or
-`conductr-core::types`) and pick up `Serialize` / `Deserialize`.
-That's a small refactor; tracked as a sub-task of #149.
+`Finding` and `FindingSeverity` live in `conductr-core::types` and
+derive `Serialize` / `Deserialize`. The wire shape is what the daemon
+serves; the daemon is responsible for attaching the dashboard-only
+enrichment fields (`issue_number`, `repo`, `first_seen`) at
+serialization time.
 
 ```ts
 type Finding = {
   title: string;
   body: string;
-  severity: "Architecture" | "Quality" | "Coverage";
+  severity: "architecture" | "quality" | "coverage";
   fingerprint: string;       // deterministic, used for dedup
   issue_number: number | null;  // null if not yet filed
   repo: RepoSlug;
