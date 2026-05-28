@@ -1686,6 +1686,7 @@ fn report_to_json(r: &conductr_orchestrate::orchestrator::CycleReport) -> serde_
         "blocked": r.blocked,
         "human": r.human,
         "pr_failing": r.pr_failing,
+        "soft_chord_deferred": r.soft_chord_deferred,
         "progress_made": r.progress_made,
         "local_ci": r.local_ci,
     })

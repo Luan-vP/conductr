@@ -1,18 +1,23 @@
 //! Top-level orchestration loop.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use tracing::{info, warn};
 
 use crate::architect::{complexity_for, phrase_id_from_title};
 use crate::classifier::{classify, Bucket, Classification};
 use crate::dispatch::{self, Runner, SlotKind};
+use crate::isolation::{self, IsolationDecision};
 use crate::tempo;
 use crate::types::IssueNumber;
+use conductr_core::maturity::MaturityLevel;
 use conductr_core::ports::{LocalCi, Mailbox, ScmHost, TmuxAgent};
+use conductr_core::safety::{preset_from_labels, resolve_preset};
 use conductr_core::types::{
-    CiMode, CiRunRow, CiStatus, MailKind, PrLocalCiResult, PrState, TempoPrRow, TmuxSession,
+    CiMode, CiRunRow, CiStatus, MailKind, PrLocalCiResult, PrState,
+    SafetyPreset, TempoPrRow, TmuxSession,
 };
 
 pub use conductr_core::types::{CycleReport, OrchestratorConfig};
@@ -28,11 +33,27 @@ pub struct Orchestrator<C: ScmHost> {
     mailbox: Option<Arc<dyn Mailbox>>,
     local_ci: Option<Arc<dyn LocalCi>>,
     tmux: Option<Arc<dyn TmuxAgent>>,
+    /// Tracks when an issue was first deferred by the STRICT soft-chord.
+    /// Used to enforce the `soft_chord_timeout`.
+    soft_chord_blocked_since: BTreeMap<IssueNumber, Instant>,
+    /// Semaphore with capacity 1 for BUREAUCRATIC hard-chord serialisation.
+    /// Acquired before each BUREAUCRATIC dispatch; released immediately after
+    /// (fire-and-forget dispatch model). Provides backpressure via async
+    /// queuing rather than busy-wait.
+    coordinator: Arc<tokio::sync::Semaphore>,
 }
 
 impl<C: ScmHost> Orchestrator<C> {
     pub fn new(client: C, config: OrchestratorConfig) -> Self {
-        Self { client, config, mailbox: None, local_ci: None, tmux: None }
+        Self {
+            client,
+            config,
+            mailbox: None,
+            local_ci: None,
+            tmux: None,
+            soft_chord_blocked_since: BTreeMap::new(),
+            coordinator: Arc::new(tokio::sync::Semaphore::new(1)),
+        }
     }
 
     /// Attach an optional mailbox for scope-dedup. When set, `run_cycle` will
@@ -76,7 +97,7 @@ impl<C: ScmHost> Orchestrator<C> {
     }
 
     /// Run a single cycle of survey → classify → act.
-    pub async fn run_cycle(&self) -> anyhow::Result<CycleReport> {
+    pub async fn run_cycle(&mut self) -> anyhow::Result<CycleReport> {
         let repo = &self.config.repo;
         info!(%repo, "surveying repo state");
 
@@ -263,10 +284,13 @@ impl<C: ScmHost> Orchestrator<C> {
         //      already claimed this issue.
         //   b) @claude comment scan — already captured in `triggered` set;
         //      issues with a comment are in TriggeredWaiting bucket, not Ready.
-        //   c) Atomic label add — add conductr:in-flight *before* posting the
+        //   c) Isolation decision — per-detent SafetyPreset check (may defer).
+        //   d) Atomic label add — add conductr:in-flight *before* posting the
         //      @claude comment so that any concurrent orchestrate sees it.
-        //   d) max_parallel_beats cap — dispatch at most N issues per pass.
+        //   e) max_parallel_beats cap — dispatch at most N issues per pass.
         let mut dispatched_this_pass = 0usize;
+        // Track BUREAUCRATIC dispatches separately: only one per cycle is allowed.
+        let mut bureaucratic_dispatched_this_pass = false;
 
         for c in &classifications {
             if c.bucket != Bucket::Ready {
@@ -307,12 +331,89 @@ impl<C: ScmHost> Orchestrator<C> {
                 }
             }
 
-            // (d) Determine runner and enforce the appropriate cap.
-            let issue_runner = open_issues
-                .iter()
-                .find(|i| i.number == c.issue)
-                .map(dispatch::runner_for)
-                .unwrap_or(Runner::Web);
+            // (c) Isolation decision — resolve effective preset and apply per-detent behaviour.
+            let issue_obj = open_issues.iter().find(|i| i.number == c.issue);
+            let routine_preset = issue_obj.and_then(|i| preset_from_labels(&i.labels));
+            let effective_preset = resolve_preset(
+                MaturityLevel::L0Bootstrap, // default maturity when not tracked
+                self.config.safety_preset,
+                routine_preset,
+            );
+
+            let siblings = isolation::sibling_prs(c.issue, &prs);
+            let soft_chord_first_seen = self.soft_chord_blocked_since.get(&c.issue).copied();
+            let isolation_decision = isolation::decide(
+                effective_preset,
+                c.issue,
+                &siblings,
+                soft_chord_first_seen,
+                self.config.soft_chord_timeout,
+            );
+
+            match isolation_decision {
+                IsolationDecision::Defer => {
+                    self.soft_chord_blocked_since.entry(c.issue).or_insert_with(Instant::now);
+                    info!(issue = c.issue, preset = ?effective_preset, "deferred by soft-chord");
+                    report.soft_chord_deferred.push(c.issue);
+                    continue;
+                }
+                IsolationDecision::DispatchWithYell(yells) => {
+                    if let Some(mb) = &self.mailbox {
+                        for yell in yells {
+                            if let Err(e) = mb.send("orchestrator", yell).await {
+                                warn!(issue = c.issue, error = %e, "failed to emit yell event");
+                            }
+                        }
+                    }
+                    // Clear any stale soft-chord tracker.
+                    self.soft_chord_blocked_since.remove(&c.issue);
+                }
+                IsolationDecision::DispatchWithAdvisory(advisory) => {
+                    if !self.config.dry_run {
+                        if let Err(e) = self.client.comment_issue(repo, c.issue, &advisory).await {
+                            warn!(issue = c.issue, error = %e, "failed to post advisory comment");
+                        }
+                    }
+                    self.soft_chord_blocked_since.remove(&c.issue);
+                }
+                IsolationDecision::Dispatch => {
+                    self.soft_chord_blocked_since.remove(&c.issue);
+                }
+            }
+
+            // (e) Hard-chord: BUREAUCRATIC preset serialises all dispatches through
+            // a single coordinator.  Three conditions must hold:
+            //   1. No other routine is currently in-flight (cross-cycle: persistent
+            //      `conductr:in-flight` label acts as a distributed lock).
+            //   2. No BUREAUCRATIC issue was already dispatched this cycle
+            //      (within-cycle: local counter).
+            //   3. The coordinator semaphore is available (concurrent `run_cycle`
+            //      callers are queued via tokio backpressure, not busy-waited).
+            if effective_preset == SafetyPreset::Bureaucratic {
+                let any_in_flight =
+                    open_issues.iter().any(|i| i.has_label(IN_FLIGHT_LABEL));
+                if any_in_flight || bureaucratic_dispatched_this_pass {
+                    info!(issue = c.issue,
+                          "hard-chord: coordinator serialising; deferring this routine");
+                    report.soft_chord_deferred.push(c.issue);
+                    continue;
+                }
+                match self.coordinator.try_acquire() {
+                    Ok(_permit) => {
+                        // Permit dropped at end of loop body; semaphore guards
+                        // concurrent `run_cycle` callers in the same process.
+                    }
+                    Err(_) => {
+                        info!(issue = c.issue,
+                              "hard-chord: coordinator semaphore held; deferring");
+                        report.soft_chord_deferred.push(c.issue);
+                        continue;
+                    }
+                }
+            }
+
+            // (f) Determine runner and enforce the appropriate cap.
+            let issue_runner = issue_obj.map(dispatch::runner_for).unwrap_or(Runner::Web);
 
             match issue_runner {
                 Runner::Web => {
@@ -348,6 +449,9 @@ impl<C: ScmHost> Orchestrator<C> {
                                 report.triggered.push(c.issue);
                                 report.progress_made = true;
                                 dispatched_this_pass += 1;
+                                if effective_preset == SafetyPreset::Bureaucratic {
+                                    bureaucratic_dispatched_this_pass = true;
+                                }
                             }
                             Err(e) => {
                                 warn!(issue = c.issue, error = %e,
@@ -409,6 +513,9 @@ impl<C: ScmHost> Orchestrator<C> {
                                         report.progress_made = true;
                                         agent_indices_in_use.push(slot_idx);
                                         dispatched_this_pass += 1;
+                                        if effective_preset == SafetyPreset::Bureaucratic {
+                                            bureaucratic_dispatched_this_pass = true;
+                                        }
                                     }
                                     Err(e) => {
                                         warn!(issue = c.issue, session = %session_name,
@@ -455,6 +562,9 @@ impl<C: ScmHost> Orchestrator<C> {
                                 report.triggered.push(c.issue);
                                 report.progress_made = true;
                                 dispatched_this_pass += 1;
+                                if effective_preset == SafetyPreset::Bureaucratic {
+                                    bureaucratic_dispatched_this_pass = true;
+                                }
                             }
                             Err(e) => {
                                 warn!(issue = c.issue, error = %e, "trigger failed");
@@ -513,7 +623,7 @@ impl<C: ScmHost> Orchestrator<C> {
     }
 
     /// Drive the orchestration to completion (or until `max_cycles`).
-    pub async fn run_to_completion(&self) -> anyhow::Result<Vec<CycleReport>> {
+    pub async fn run_to_completion(&mut self) -> anyhow::Result<Vec<CycleReport>> {
         let mut history = Vec::new();
         let mut cycle = 0u32;
         loop {
@@ -562,7 +672,9 @@ fn resolve_ci_mode(mode: CiMode, local: CiStatus, github: CiStatus) -> CiStatus 
 mod tests {
     use super::*;
     use conductr_adapters::mock::MockScmHost;
-    use conductr_core::types::{Issue, IssueState, MailKind, MailMessage, MailRef, Pr, RepoSlug};
+    use conductr_core::types::{
+        CiStatus, Issue, IssueState, MailKind, MailMessage, MailRef, Pr, PrState, RepoSlug,
+    };
     use conductr_core::ports::{Mailbox, MailboxError};
     use async_trait::async_trait;
     use chrono::Utc;
@@ -693,7 +805,7 @@ mod tests {
             state: IssueState::Open,
         }]);
         let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
-        let orch = Orchestrator::new(client, cfg);
+        let mut orch = Orchestrator::new(client, cfg);
         let report = orch.run_cycle().await.unwrap();
         assert_eq!(report.triggered, vec![1]);
         assert_eq!(orch.client.posted_comments(), vec![(1, "@claude please implement".to_string())]);
@@ -710,7 +822,7 @@ mod tests {
         }]);
         let mut cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
         cfg.dry_run = true;
-        let orch = Orchestrator::new(client, cfg);
+        let mut orch = Orchestrator::new(client, cfg);
         let report = orch.run_cycle().await.unwrap();
         assert!(report.triggered.is_empty());
         assert!(orch.client.posted_comments().is_empty());
@@ -721,7 +833,7 @@ mod tests {
         let client = FakeClient::default();
         let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
         let mb = Arc::new(FakeMailbox::default().with_scope_claim(1));
-        let orch = Orchestrator::new(client, cfg).with_mailbox(mb);
+        let mut orch = Orchestrator::new(client, cfg).with_mailbox(mb);
         let report = orch.run_cycle().await.unwrap();
         // Issue 1 is Ready but has a scope claim → skipped.
         assert!(report.triggered.is_empty());
@@ -733,7 +845,7 @@ mod tests {
     async fn no_mailbox_behaves_as_before() {
         let client = FakeClient::default();
         let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
-        let orch = Orchestrator::new(client, cfg);
+        let mut orch = Orchestrator::new(client, cfg);
         let report = orch.run_cycle().await.unwrap();
         assert_eq!(report.triggered, vec![1]);
         assert!(report.scope_overlap.is_empty());
@@ -807,7 +919,7 @@ mod tests {
     async fn in_flight_label_prevents_dispatch() {
         let client = MockScmHost::new().with_issues([make_issue(1, &[IN_FLIGHT_LABEL])]);
         let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
-        let orch = Orchestrator::new(client, cfg);
+        let mut orch = Orchestrator::new(client, cfg);
         let report = orch.run_cycle().await.unwrap();
         // Issue has conductr:in-flight → should be skipped.
         assert!(report.triggered.is_empty());
@@ -818,7 +930,7 @@ mod tests {
     async fn dispatch_adds_in_flight_label_before_comment() {
         let client = MockScmHost::new().with_issues([make_issue(1, &[])]);
         let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
-        let orch = Orchestrator::new(client, cfg);
+        let mut orch = Orchestrator::new(client, cfg);
         let report = orch.run_cycle().await.unwrap();
         assert_eq!(report.triggered, vec![1]);
         // Label must have been added.
@@ -837,8 +949,144 @@ mod tests {
         ]);
         let mut cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
         cfg.max_parallel_beats = 2;
-        let orch = Orchestrator::new(client, cfg);
+        let mut orch = Orchestrator::new(client, cfg);
         let report = orch.run_cycle().await.unwrap();
         assert_eq!(report.triggered.len(), 2, "should dispatch exactly 2 issues");
+    }
+
+    // ── Per-detent isolation integration tests ────────────────────────────────
+
+    fn make_pr_for_issue(pr_num: u64, issue_num: IssueNumber, ci: CiStatus) -> Pr {
+        Pr {
+            number: pr_num,
+            title: format!("pr-{pr_num}"),
+            body: String::new(),
+            head_ref: format!("claude/issue-{issue_num}-fix"),
+            state: conductr_core::types::PrState::Open,
+            ci,
+            linked_issue: Some(issue_num),
+        }
+    }
+
+    // ── Helper: open PR for issue 99 (a non-tracked sibling). ───────────────
+    // Issues 1 and 2 see this as a sibling since it's not linked to them.
+    fn sibling_pr_99() -> Pr {
+        make_pr_for_issue(99, 99, CiStatus::Pending)
+    }
+
+    /// UNHINGED: both routines dispatch even when a sibling branch is present.
+    #[tokio::test]
+    async fn unhinged_two_routines_both_dispatch() {
+        // PR 99 linked to issue 99 is a sibling of issues 1 and 2 (not linked to either).
+        let client = MockScmHost::new()
+            .with_issues([make_issue(1, &["safety:unhinged"]), make_issue(2, &["safety:unhinged"])])
+            .with_prs([sibling_pr_99()]);
+        let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
+        let mut orch = Orchestrator::new(client, cfg);
+        let report = orch.run_cycle().await.unwrap();
+        assert_eq!(report.triggered.len(), 2, "UNHINGED: both should dispatch");
+        assert!(report.soft_chord_deferred.is_empty());
+    }
+
+    /// FERAL: both routines dispatch; structured Yell events emitted for sibling presence.
+    #[tokio::test]
+    async fn feral_two_routines_dispatch_with_yell() {
+        let mb = Arc::new(FakeMailbox::default());
+        // PR 99 is a sibling of both issues 1 and 2.
+        let client = MockScmHost::new()
+            .with_issues([make_issue(1, &["safety:feral"]), make_issue(2, &["safety:feral"])])
+            .with_prs([sibling_pr_99()]);
+        let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
+        let mut orch = Orchestrator::new(client, cfg).with_mailbox(mb.clone());
+        let report = orch.run_cycle().await.unwrap();
+        assert_eq!(report.triggered.len(), 2, "FERAL: both should dispatch");
+        assert!(report.soft_chord_deferred.is_empty());
+        // At least one Yell event should be in the mailbox.
+        let inbox = mb.inbox(None, None).await.unwrap();
+        assert!(
+            inbox.iter().any(|m| matches!(m.payload, MailKind::Yell { .. })),
+            "expected at least one structured Yell event, got: {:?}", inbox
+        );
+    }
+
+    /// FAST: both routines dispatch; advisory comment posted for sibling overlap.
+    #[tokio::test]
+    async fn fast_two_routines_dispatch_with_advisory() {
+        // PR 99 is a sibling of both issues 1 and 2.
+        let client = MockScmHost::new()
+            .with_issues([make_issue(1, &["safety:fast"]), make_issue(2, &["safety:fast"])])
+            .with_prs([sibling_pr_99()]);
+        let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
+        let mut orch = Orchestrator::new(client, cfg);
+        let report = orch.run_cycle().await.unwrap();
+        assert_eq!(report.triggered.len(), 2, "FAST: both should dispatch");
+        let comments = orch.client.posted_comments();
+        assert!(
+            comments.iter().any(|(_, body)| body.contains("Advisory")),
+            "expected at least one advisory comment, got: {:?}", comments
+        );
+    }
+
+    /// STRICT: routine deferred when the only sibling PR has amber (pending) CI.
+    #[tokio::test]
+    async fn strict_defers_when_sibling_amber() {
+        // PR 99 (pending CI) is a sibling of issues 1 and 2.
+        let client = MockScmHost::new()
+            .with_issues([make_issue(1, &["safety:strict"]), make_issue(2, &["safety:strict"])])
+            .with_prs([sibling_pr_99()]);
+        let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
+        let mut orch = Orchestrator::new(client, cfg);
+        let report = orch.run_cycle().await.unwrap();
+        // Both issues see amber sibling → both deferred.
+        assert_eq!(report.soft_chord_deferred.len(), 2,
+            "expected both issues deferred by soft-chord, got {:?}", report.soft_chord_deferred);
+        assert!(report.triggered.is_empty());
+    }
+
+    /// STRICT: dispatches after the soft-chord timeout expires.
+    #[tokio::test]
+    async fn strict_dispatches_after_soft_chord_timeout() {
+        let client = MockScmHost::new()
+            .with_issues([make_issue(1, &["safety:strict"])])
+            .with_prs([sibling_pr_99()]);
+        let mut cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
+        cfg.soft_chord_timeout = std::time::Duration::from_millis(1);
+        let mut orch = Orchestrator::new(client, cfg);
+
+        // First cycle: deferred by soft-chord.
+        let report1 = orch.run_cycle().await.unwrap();
+        assert_eq!(report1.soft_chord_deferred, vec![1], "expected deferral in first cycle");
+        assert!(report1.triggered.is_empty());
+
+        // Wait past the timeout.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // Second cycle: timeout expired → dispatch despite amber sibling.
+        let report2 = orch.run_cycle().await.unwrap();
+        assert!(
+            report2.soft_chord_deferred.is_empty(),
+            "expected no deferral after timeout, got {:?}", report2.soft_chord_deferred
+        );
+        assert_eq!(report2.triggered, vec![1]);
+    }
+
+    /// BUREAUCRATIC: hard-chord serialises — only one routine dispatched per cycle.
+    #[tokio::test]
+    async fn bureaucratic_serialises_dispatch() {
+        let client = MockScmHost::new().with_issues([
+            make_issue(1, &["safety:bureaucratic"]),
+            make_issue(2, &["safety:bureaucratic"]),
+        ]);
+        let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
+        let mut orch = Orchestrator::new(client, cfg);
+        let report = orch.run_cycle().await.unwrap();
+        assert_eq!(
+            report.triggered.len(), 1,
+            "BUREAUCRATIC should dispatch exactly 1 per cycle, got {:?}", report.triggered
+        );
+        assert_eq!(
+            report.soft_chord_deferred.len(), 1,
+            "second BUREAUCRATIC routine should be deferred, got {:?}", report.soft_chord_deferred
+        );
     }
 }

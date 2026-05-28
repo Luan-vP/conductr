@@ -1,3 +1,36 @@
+// ── safety types ─────────────────────────────────────────────────────────────
+
+/// Safety preset controlling branch-isolation and chord behaviour.
+///
+/// Ordered from least to most restrictive. Can be set per-orchestrator
+/// (via `OrchestratorConfig`), per-repo maturity, or per-issue (`safety:<preset>` label).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SafetyPreset {
+    /// Solo branch. Sibling branches are not fetched or surfaced.
+    Unhinged,
+    /// Solo branch. Post-merge conflict detection emits a `MailKind::Yell` event but does not block.
+    #[default]
+    Feral,
+    /// Read-only sibling awareness. Advisory comment posted on likely-conflict overlap; routine still runs.
+    Fast,
+    /// Soft-chord. Routine awaits green siblings; dispatches if siblings amber/red after timeout.
+    Strict,
+    /// Hard-chord. Orchestrator serialises all routines through a single coordinator lock.
+    Bureaucratic,
+}
+
+/// Aggregated CI health of sibling branches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiblingStatus {
+    /// All siblings have passing CI.
+    Green,
+    /// At least one sibling has pending/unknown CI (no failures).
+    Amber,
+    /// At least one sibling has failing CI.
+    Red,
+}
+
 // ── conductr-tasks types ──────────────────────────────────────────────────────
 
 use serde::{Deserialize, Serialize};
@@ -265,6 +298,14 @@ pub struct OrchestratorConfig {
     /// Path to the `.conductr` project config file. When set, the orchestrator
     /// appends `[[tempo.prs]]` and `[[ci.runs]]` rows on PR close/merge.
     pub conductr_config_path: Option<std::path::PathBuf>,
+    /// Orchestrator-level safety preset override. When `None`, the effective
+    /// preset is derived from repo maturity (via `resolve_preset`). Individual
+    /// issues can further override via `safety:<preset>` label.
+    pub safety_preset: Option<SafetyPreset>,
+    /// Soft-chord timeout for the `STRICT` preset. If sibling branches remain
+    /// amber after this duration (from when the issue was first deferred), the
+    /// orchestrator dispatches anyway. Default: 10 minutes.
+    pub soft_chord_timeout: std::time::Duration,
 }
 
 impl OrchestratorConfig {
@@ -281,6 +322,8 @@ impl OrchestratorConfig {
             max_parallel_qa: 2,
             tmux_cwd: None,
             conductr_config_path: None,
+            safety_preset: None,
+            soft_chord_timeout: std::time::Duration::from_secs(600),
         }
     }
 }
@@ -378,6 +421,8 @@ pub struct CycleReport {
     pub human: Vec<IssueNumber>,
     pub pr_failing: Vec<u64>,
     pub scope_overlap: Vec<IssueNumber>,
+    /// Issues deferred by the soft-chord (STRICT) or hard-chord (BUREAUCRATIC) this cycle.
+    pub soft_chord_deferred: Vec<IssueNumber>,
     pub progress_made: bool,
     pub local_ci: Vec<PrLocalCiResult>,
 }
@@ -550,6 +595,17 @@ pub enum MailKind {
     },
     /// An informational note from an agent (free-form).
     Note { text: String },
+    /// Emitted by a FERAL-preset routine when a potential post-merge conflict
+    /// is detected with a sibling branch. Structured so consumers can route,
+    /// deduplicate, or alert on it without parsing free-text logs.
+    Yell {
+        /// The issue whose routine detected the conflict.
+        issue: IssueNumber,
+        /// Head ref (branch name) of the sibling branch in conflict.
+        sibling_branch: String,
+        /// Short human-readable reason (e.g. "sibling branch has failing CI").
+        message: String,
+    },
 }
 
 /// A single message on the shared bulletin board.
@@ -562,23 +618,6 @@ pub struct MailMessage {
 }
 
 // ── CI gate types ─────────────────────────────────────────────────────────────
-
-/// Operational safety profile that governs the merge gate.
-/// Resolved from the `[safety]` section of `.conductr` by `resolve_preset`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum SafetyPreset {
-    /// Skip CI entirely; merge on push.
-    Unhinged,
-    /// Require ≥1 required check green; optional checks ignored.
-    Feral,
-    /// Require all required checks green; advisory amber tolerated.
-    Fast,
-    /// Require full green including advisory; one flake-retry on transient failures.
-    Strict,
-    /// Full green + human review approved + linked issue closed + ADR present.
-    Bureaucratic,
-}
 
 /// Pass/fail state of a single CI check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
