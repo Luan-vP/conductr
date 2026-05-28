@@ -49,14 +49,47 @@ conductr architect review
 ```
 
 This opens or reuses the `conductr-architect` session, starts Claude if
-needed, and runs `/architect review`. That skill checks all six hexagonal
-rules and `check_cli_skill_parity`. Findings flow back to phase 4.
+needed, and runs `/architect review`. That skill reads `.claude/base.md`
+for the pattern and rules (defaulting to hexagonal if absent), checks
+CLI–skill parity, and emits `Architecture` findings. Findings flow back
+to phase 5.
 
 Do not duplicate any of the architect's checks here — the delegation is
 intentional. Wait for the architect session to return findings before
 proceeding.
 
-### Phase 3 — Module pick + clippy scan
+### Phase 2.5 — Security audit (delegated)
+
+Delegate a source-level security review to the architect skill:
+
+```bash
+conductr architect security-review
+```
+
+This opens or reuses the `conductr-architect` session, starts Claude if
+needed, and runs `/architect security-review`. That skill scans for
+hardcoded secrets, dependency advisories, auth/AuthZ gaps, input
+validation holes, logging hygiene issues, and framework footguns.
+Findings use `FindingSeverity::Security` and flow into phase 5 with the
+`security` label.
+
+Do not duplicate the security scan here — the delegation is intentional.
+If the architect session is already busy from phase 2, skip this phase
+and log a note; do not block phase 3.
+
+### Phase 3 — Module pick + clippy scan (Rust-only)
+
+**Probe:** Check for `Cargo.toml` at the repo root:
+
+```bash
+test -f Cargo.toml && echo "rust" || echo "skip"
+```
+
+If `Cargo.toml` is absent, log one line:
+```
+idle: no Cargo.toml at repo root — skipping clippy scan (non-Rust repo)
+```
+and skip to phase 4.
 
 **Pick the next crate.** Read `[idle].last_module` and advance one step in
 the round-robin list:
@@ -84,7 +117,19 @@ create a `Finding`:
 
 Deduplicate by fingerprint within this run.
 
-### Phase 4 — Module coverage scan
+### Phase 4 — Module coverage scan (Rust-only)
+
+**Probe:** Check for `Cargo.toml` at the repo root:
+
+```bash
+test -f Cargo.toml && echo "rust" || echo "skip"
+```
+
+If `Cargo.toml` is absent, log one line:
+```
+idle: no Cargo.toml at repo root — skipping coverage scan (non-Rust repo)
+```
+and skip to phase 5.
 
 For the same crate picked in phase 3, run line-coverage analysis:
 
@@ -116,7 +161,7 @@ coverage_exclude   = ["src/main.rs", "src/bin/**"]
 
 ### Phase 5 — File issues
 
-Collect all findings from phases 2, 3, and 4. For each finding (up to
+Collect all findings from phases 2, 2.5, 3, and 4. For each finding (up to
 `--max-issues`, default 5):
 
 1. Check for an open issue with an identical title:
@@ -131,7 +176,7 @@ Collect all findings from phases 2, 3, and 4. For each finding (up to
      --body "<body with fingerprint comment>" \
      --label "idle-finding,<severity-label>"
    ```
-   Labels: `idle-finding` + one of `architecture`, `quality`, or `coverage`.
+   Labels: `idle-finding` + one of `architecture`, `quality`, `coverage`, or `security`.
 4. Embed the fingerprint as an HTML comment in the body:
    `<!-- conductr-idle-fingerprint: <fingerprint> -->`
 
@@ -141,11 +186,13 @@ gh label create idle-finding --color d4c5f9 --description "Auto-filed by conduct
 gh label create architecture  --color e4e669 --description "Architecture rule violation"  --force
 gh label create quality       --color bfd4f2 --description "Code quality finding"          --force
 gh label create coverage      --color 0075ca --description "Test coverage finding"         --force
+gh label create security      --color ee0701 --description "Security finding"               --force
 ```
 
 ### Phase 6 — Persist state
 
-After phase 5 succeeds on a non-dry-run pass:
+After phase 5 succeeds on a non-dry-run pass (phases 3 and 4 may have been
+skipped for non-Rust repos; that is not an error):
 
 ```bash
 # Update [idle] block in .conductr

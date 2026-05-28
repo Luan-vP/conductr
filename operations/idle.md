@@ -20,8 +20,12 @@ passes. Same English word, different scope.
 
 ## What a pass does
 
-Each idle pass executes five phases in order. Failures in any phase are
+Each idle pass executes six phases in order. Failures in any phase are
 reported but don't abort later phases — partial output is still useful.
+
+Phases 3 and 4 are **Rust-only**: they are skipped with a single logged line
+on repos that have no `Cargo.toml` at the root. This makes idle useful on
+any repo that has a `.claude/base.md`, regardless of ecosystem.
 
 ### 1. Read configuration
 
@@ -47,13 +51,49 @@ conductr architect review
 ```
 
 This opens or reuses the `conductr-architect` pod session, starts Claude if
-needed, and sends `/architect review` to run the full hexagonal audit
-(including `check_cli_skill_parity`). Rules 1–4 are checked via
-dependency-graph analysis; rules 5–6 via source-level inspection. Findings
-emitted by the architect skill flow into phase 4 for issue filing. Idle does
-not duplicate this analysis inline.
+needed, and sends `/architect review`. That skill reads `.claude/base.md`
+for the architectural pattern and rules (defaulting to hexagonal if the file
+is absent or unstructured), then audits the workspace against those rules.
+It also runs `check_cli_skill_parity` when a `skills/` surface is present.
+Findings emitted by the architect skill flow into phase 5 for issue filing.
+Idle does not duplicate this analysis inline.
 
-### 3. Module pick + scan
+### 2.5. Security audit (delegated)
+
+The source-level security review delegates to the **architect** skill:
+
+```
+conductr architect security-review
+```
+
+This opens or reuses the `conductr-architect` pod session (the same one used
+by phase 2) and sends `/architect security-review`. The skill performs a
+pure static analysis pass covering:
+
+- **Hardcoded secrets** — committed API keys, tokens, passwords in source files.
+- **Dependency hygiene** — `npm audit`, `cargo audit`, `pip-audit` or equivalent
+  for whatever package managers the repo uses (auto-detected from lockfile presence).
+- **Auth/AuthZ surface** — missing auth on routes, missing CSRF, unverified webhooks,
+  missing rate limits on auth endpoints.
+- **Input validation gaps** — user-controlled surfaces without evident validation.
+- **Logging hygiene** — sensitive data logged at info+ level.
+- **Framework footguns** — `dangerouslySetInnerHTML`, `eval`, `unsafe` without SAFETY
+  comments, `subprocess.shell=True`, etc. (framework-aware; Claude judges relevance).
+
+Findings use `FindingSeverity::Security` and the `security` label. The LLM is
+expected to judge severity — not every `unsafe` block in a safe-systems-programming
+codebase is a real finding.
+
+If the architect session is still busy from phase 2 when phase 2.5 runs,
+skip with a log line and continue to phase 3.
+
+### 3. Module pick + clippy scan (Rust-only)
+
+**Probe.** If `Cargo.toml` is absent at the repo root, log:
+```
+idle: no Cargo.toml at repo root — skipping clippy scan (non-Rust repo)
+```
+and skip to phase 4.
 
 **Pick.** Round-robin through the use-case crates via `[idle].last_module`.
 If the value is empty or unknown, start at the first crate.
@@ -62,7 +102,13 @@ If the value is empty or unknown, start at the first crate.
 on the picked crate. Each clippy warning becomes a `Finding` with severity
 `Quality`, fingerprinted as `clippy/{crate}/{lint}/{file:line}`.
 
-### 4. Module coverage scan
+### 4. Module coverage scan (Rust-only)
+
+**Probe.** If `Cargo.toml` is absent at the repo root, log:
+```
+idle: no Cargo.toml at repo root — skipping coverage scan (non-Rust repo)
+```
+and skip to phase 5.
 
 For the same crate picked in phase 3, run:
 
@@ -97,7 +143,7 @@ For each `Finding` up to `--max-issues` (default 5):
 
 - Skip if an open issue with an identical title already exists.
 - Otherwise create via `ScmHost::create_issue` with labels
-  `idle-finding` + (`architecture` | `quality` | `coverage`).
+  `idle-finding` + (`architecture` | `quality` | `coverage` | `security`).
 - Embed the fingerprint as an HTML comment in the body
   (`<!-- conductr-idle-fingerprint: ... -->`) for future fingerprint-based
   dedup.
@@ -107,6 +153,16 @@ issue up and act on it without further triage.
 
 After phase 5 succeeds, `[idle].last_module` advances to the next crate and
 `last_run` is set to the current timestamp.
+
+### Ecosystem matrix
+
+| Phase | conductr (Rust) | JS/TS repo | Python repo | No base.md |
+|-------|----------------|------------|-------------|------------|
+| 2. arch audit | ✓ | ✓ | ✓ | ✓ (hex default) |
+| 2.5 security | ✓ | ✓ | ✓ | ✓ |
+| 3. clippy | ✓ | skip | skip | ✓ |
+| 4. coverage | ✓ | skip | skip | ✓ |
+| 5. file issues | ✓ | ✓ | ✓ | ✓ |
 
 ## Invocation
 

@@ -568,7 +568,86 @@ pub(crate) fn severity_label(s: &FindingSeverity) -> &'static str {
         FindingSeverity::Architecture => "architecture",
         FindingSeverity::Quality => "quality",
         FindingSeverity::Coverage => "coverage",
+        FindingSeverity::Security => "security",
     }
+}
+
+/// True when `Cargo.toml` exists at the repo root (non-Rust repos lack this).
+pub fn has_cargo_toml(repo_path: &Path) -> bool {
+    repo_path.join("Cargo.toml").exists()
+}
+
+/// Check that `.claude/base.md` exists and has recognisable structure.
+///
+/// When the file is absent or has no `## ` headings, emits one `Architecture`
+/// finding whose body embeds the hexagonal (ports & adapters) template as the
+/// recommended starting point.  Authors who want a different pattern write
+/// their own base.md; absent that, hex is the standing convention.
+pub fn check_base_md(repo_path: &Path) -> Vec<Finding> {
+    let base_path = repo_path.join(".claude").join("base.md");
+
+    let fp_suffix = match std::fs::read_to_string(&base_path) {
+        Err(_) => "missing",
+        Ok(content) if !content.lines().any(|l| l.starts_with("## ")) => "unstructured",
+        Ok(_) => return vec![],
+    };
+
+    let fp = format!("arch/base-md/{fp_suffix}");
+    let detail = if fp_suffix == "missing" {
+        "`.claude/base.md` was not found".to_string()
+    } else {
+        format!(
+            "`{}` exists but has no `## ` section headings",
+            base_path.display()
+        )
+    };
+
+    vec![Finding {
+        title: "arch: `.claude/base.md` is absent or unstructured".to_string(),
+        body: format!(
+            "## Finding\n\n\
+             {detail}\n\n\
+             This file is the architectural ground truth for the idle audit and the architect \
+             skill. Without it, the LLM-driven architecture audit runs against a generic \
+             baseline instead of this repo's declared rules.\n\n\
+             ## Proposed hexagonal default\n\n\
+             Create `.claude/base.md` with at minimum **Pattern**, **Arms**, and **Rules** \
+             sections. For a hexagonal (ports & adapters) repo the template is:\n\n\
+             ```markdown\n\
+             ## Pattern\n\
+             \n\
+             Hexagonal (ports & adapters). Driving adapters (CLI, skills) call use-case\n\
+             crates; those depend only on core (types + ports); concrete connectors live\n\
+             in a single adapters crate.\n\
+             \n\
+             ## Arms\n\
+             \n\
+             List your use-case crates here, e.g.:\n\
+             - `<name>-orchestrate`\n\
+             - `<name>-tasks`\n\
+             - `<name>-setup`\n\
+             \n\
+             ## Rules\n\
+             \n\
+             1. Use-case crates may not depend on the adapters crate.\n\
+             2. The binary is the only place adapters are constructed and wired into use cases.\n\
+             3. Adapters never depend on use-case crates.\n\
+             4. Core has no I/O.\n\
+             5. Mocks belong in the adapters crate, not in per-crate test modules.\n\
+             6. One trait per port.\n\
+             ```\n\
+             \n\
+             Override the **Pattern** section with your repo's actual architectural pattern; \
+             the architect skill reads it at runtime and audits against whatever rules the \
+             file declares. Absent a custom base.md, hexagonal is the standing default.\n\n\
+             ## Acceptance criteria\n\n\
+             - [ ] Create `.claude/base.md` with **Pattern**, **Arms**, and **Rules** sections.\n\
+             - [ ] Re-run `conductr architect review` — the LLM audit now uses your rules.\n\n\
+             <!-- conductr-idle-fingerprint: {fp} -->"
+        ),
+        severity: FindingSeverity::Architecture,
+        fingerprint: fp,
+    }]
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -926,6 +1005,65 @@ tokio = { version = "1", features = ["process", "rt"] }
         assert!(glob_match("src/**/*.rs", "src/nested/deep/mod.rs"));
         assert!(glob_match("src/**", "src/lib.rs"));
         assert!(glob_match("src/**", "src/a/b/c.rs"));
+    }
+
+    // ── has_cargo_toml ────────────────────────────────────────────────────────
+
+    #[test]
+    fn has_cargo_toml_true_when_present() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"test\"\n",
+        )
+        .unwrap();
+        assert!(has_cargo_toml(dir.path()));
+    }
+
+    #[test]
+    fn has_cargo_toml_false_when_absent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(!has_cargo_toml(dir.path()));
+    }
+
+    // ── check_base_md ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn check_base_md_missing_emits_finding() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let findings = check_base_md(dir.path());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, FindingSeverity::Architecture);
+        assert!(findings[0].fingerprint.contains("missing"));
+        assert!(findings[0].body.contains("hexagonal"));
+    }
+
+    #[test]
+    fn check_base_md_unstructured_emits_finding() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(claude_dir.join("base.md"), "Just a paragraph, no headings.\n").unwrap();
+        let findings = check_base_md(dir.path());
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].fingerprint.contains("unstructured"));
+    }
+
+    #[test]
+    fn check_base_md_structured_returns_empty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("base.md"),
+            "# Architecture\n\n## Pattern\n\nHexagonal.\n\n## Rules\n\n1. foo\n",
+        )
+        .unwrap();
+        let findings = check_base_md(dir.path());
+        assert!(
+            findings.is_empty(),
+            "structured base.md should produce no findings"
+        );
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

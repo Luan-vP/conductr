@@ -505,6 +505,7 @@ pub enum FindingSeverity {
     Architecture,
     Quality,
     Coverage,
+    Security,
 }
 
 /// One drift detected by an idle-scan pass (architecture rule violation,
