@@ -302,6 +302,9 @@ enum PodCmd {
     Heal(HealArgs),
     /// Snapshot unfinished work to beads then restart pod sessions.
     SaveState(SaveStateArgs),
+    /// Ensure the named project tmux session exists and has Claude running.
+    /// Idempotent: a no-op if the session is already live and idle.
+    EnsureSession(EnsureSessionArgs),
 }
 
 async fn run_pod(args: PodArgs) -> Result<()> {
@@ -310,6 +313,7 @@ async fn run_pod(args: PodArgs) -> Result<()> {
         PodCmd::Free(a) => run_free(a).await,
         PodCmd::Heal(a) => run_heal(a).await,
         PodCmd::SaveState(a) => run_save_state(a).await,
+        PodCmd::EnsureSession(a) => run_ensure_session(a).await,
     }
 }
 
@@ -392,6 +396,26 @@ struct SaveStateArgs {
     /// Can also be set via `CONDUCTR_NOTION_DATABASE`.
     #[arg(long, env = "CONDUCTR_NOTION_DATABASE")]
     notion_database: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+struct EnsureSessionArgs {
+    /// Project tag. The tmux session is named `conductr-<tag>`.
+    tag: String,
+    /// Working directory for the tmux session (defaults to current directory).
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    /// Command used to start the AI agent.
+    #[arg(long = "claude-cmd", default_value = "claude --dangerously-skip-permissions")]
+    claude_cmd: String,
+    /// Command to run once the session is ready.
+    /// A `/`-prefixed command is sent as keys to the Claude session (skill dispatch).
+    /// Any other command is run as a subprocess (e.g. `conductr orchestrate --repo X --once`).
+    #[arg(long = "then")]
+    then_cmd: Option<String>,
+    /// Print the plan without creating sessions or running commands.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -798,6 +822,130 @@ async fn run_save_state(args: SaveStateArgs) -> Result<()> {
     }
 
     println!("{}", serde_json::to_string_pretty(&manifest)?);
+    Ok(())
+}
+
+// ── ensure-session ────────────────────────────────────────────────────────────
+
+async fn run_ensure_session(args: EnsureSessionArgs) -> Result<()> {
+    let session = format!("conductr-{}", args.tag);
+    let cwd = args
+        .cwd
+        .map(|p| p.to_string_lossy().into_owned())
+        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| ".".to_string());
+    let claude_cmd = &args.claude_cmd;
+
+    if args.dry_run {
+        let tmux = Tmux::new();
+        return run_ensure_session_dry(
+            &tmux,
+            &session,
+            &cwd,
+            claude_cmd,
+            args.then_cmd.as_deref(),
+        )
+        .await;
+    }
+
+    let tmux = Tmux::new();
+    let state = ensure_session(&tmux, &session, &cwd)
+        .await
+        .with_context(|| format!("ensuring tmux session '{session}'"))?;
+
+    let ready = match &state {
+        SessionState::Existing(Health::Working { activity }) => {
+            println!("ensure-session: target_stale_or_not_consuming (working: {activity})");
+            false
+        }
+        SessionState::Existing(Health::Unknown { reason }) => {
+            println!("ensure-session: target_stale_or_not_consuming (unknown: {reason})");
+            false
+        }
+        SessionState::Existing(Health::Crashed { .. }) => {
+            println!("ensure-session: session '{session}' crashed — restarting Claude");
+            tmux.send_line(&session, claude_cmd)
+                .await
+                .context("restarting Claude after crash")?;
+            wait_for_idle(&tmux, &session).await?;
+            println!("ensure-session: session_missing_created");
+            true
+        }
+        SessionState::Created => {
+            println!("ensure-session: session_missing_created — starting Claude in '{session}'");
+            tmux.send_line(&session, claude_cmd)
+                .await
+                .context("starting Claude in new session")?;
+            wait_for_idle(&tmux, &session).await?;
+            true
+        }
+        SessionState::Existing(Health::Idle { .. }) => {
+            println!("ensure-session: session_reused");
+            true
+        }
+    };
+
+    if let Some(then_cmd) = &args.then_cmd {
+        if !ready {
+            return Ok(());
+        }
+        if then_cmd.starts_with('/') {
+            // Skill command — dispatch into the live Claude session.
+            tmux.send_line(&session, then_cmd)
+                .await
+                .with_context(|| format!("sending '{then_cmd}' to session '{session}'"))?;
+            println!("ensure-session: prompt_written_to_target_pane");
+        } else {
+            // External command — run as a subprocess.
+            println!("ensure-session: subprocess_started: {then_cmd}");
+            let status = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(then_cmd)
+                .status()
+                .with_context(|| format!("running subprocess: {then_cmd}"))?;
+            if !status.success() {
+                anyhow::bail!("--then subprocess exited with status {status}: {then_cmd}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_ensure_session_dry(
+    tmux: &Tmux,
+    session: &str,
+    cwd: &str,
+    claude_cmd: &str,
+    then_cmd: Option<&str>,
+) -> Result<()> {
+    let sessions = match tmux.list_sessions().await {
+        Ok(s) => s,
+        Err(TmuxError::NoServer) | Err(TmuxError::NotInstalled) => {
+            println!("ensure-session: tmux not running");
+            println!("ensure-session: → would create session '{session}' at cwd={cwd}");
+            println!("ensure-session: → would start Claude: `{claude_cmd}`");
+            if let Some(cmd) = then_cmd {
+                println!("ensure-session: → would run: `{cmd}`");
+            }
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    if sessions.iter().any(|s| s.name == session) {
+        println!("ensure-session: session '{session}' already exists");
+        if let Some(cmd) = then_cmd {
+            println!("ensure-session: → would run: `{cmd}`");
+        }
+    } else {
+        println!("ensure-session: session '{session}' does not exist");
+        println!("ensure-session: → would create session at cwd={cwd}");
+        println!("ensure-session: → would start Claude: `{claude_cmd}`");
+        if let Some(cmd) = then_cmd {
+            println!("ensure-session: → would run: `{cmd}`");
+        }
+    }
     Ok(())
 }
 
