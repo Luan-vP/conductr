@@ -619,23 +619,6 @@ pub struct MailMessage {
 
 // ── CI gate types ─────────────────────────────────────────────────────────────
 
-/// Operational safety profile that governs the merge gate.
-/// Resolved from the `[safety]` section of `.conductr` by `resolve_preset`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum SafetyPreset {
-    /// Skip CI entirely; merge on push.
-    Unhinged,
-    /// Require ≥1 required check green; optional checks ignored.
-    Feral,
-    /// Require all required checks green; advisory amber tolerated.
-    Fast,
-    /// Require full green including advisory; one flake-retry on transient failures.
-    Strict,
-    /// Full green + human review approved + linked issue closed + ADR present.
-    Bureaucratic,
-}
-
 /// Pass/fail state of a single CI check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
