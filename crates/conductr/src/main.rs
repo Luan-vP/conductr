@@ -1089,6 +1089,18 @@ enum SetupCmd {
         #[arg(long)]
         repo: Option<PathBuf>,
     },
+    /// Symlink all skills/<name>/ into ~/.claude/skills/ so Claude Code can discover them.
+    InstallSkills {
+        /// Path to the repository root (defaults to current directory).
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Print the plan without making any changes.
+        #[arg(long)]
+        dry_run: bool,
+        /// Overwrite conflicting symlinks (never overwrites real directories).
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 async fn run_setup(args: SetupArgs) -> Result<()> {
@@ -1122,6 +1134,10 @@ async fn run_setup(args: SetupArgs) -> Result<()> {
         SetupCmd::InstallClaudeApp { repo } => {
             let repo = resolve_repo(repo)?;
             conductr_setup::fixes::install_claude_app(&repo, false)?;
+        }
+        SetupCmd::InstallSkills { repo, dry_run, force } => {
+            let repo = resolve_repo(repo)?;
+            conductr_setup::fixes::install_skills(&repo, dry_run, force)?;
         }
     }
     Ok(())
