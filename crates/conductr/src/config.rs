@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use conductr_core::safety::SafetyConfig;
 use conductr_core::types::CiMode;
 use serde::{Deserialize, Serialize};
 
@@ -219,6 +220,8 @@ struct RawConfig {
     pub architecture: ArchitectureSection,
     #[serde(default)]
     pub idle: IdleSection,
+    #[serde(default)]
+    pub safety: SafetyConfig,
 }
 
 /// Read `project_tag` from `.conductr` in `repo_path`.
@@ -371,6 +374,12 @@ pub fn read_architecture_section(repo_path: &Path) -> Result<ArchitectureSection
 /// Returns defaults when the file or section is absent.
 pub fn read_idle_section(repo_path: &Path) -> Result<IdleSection> {
     read_raw(repo_path).map(|c| c.idle)
+}
+
+/// Read the `[safety]` section from `.conductr` in `repo_path`.
+/// Returns an all-`None` config when the file or section is absent.
+pub fn read_safety_section(repo_path: &Path) -> Result<SafetyConfig> {
+    read_raw(repo_path).map(|c| c.safety)
 }
 
 /// Read the top-level `repo` key from `.conductr` in `repo_path`.
@@ -864,5 +873,71 @@ last_run    = "2026-05-11T08:00:00Z"
         assert!(out.contains("[cadence]"));
         assert!(out.contains("[band]"));
         assert!(out.contains("last_module = \"conductr-mail\""));
+    }
+
+    // ── [safety] ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn safety_section_absent_gives_all_nones() {
+        let raw = r#"project_tag = "test""#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert!(cfg.safety.preset.is_none());
+        assert!(cfg.safety.overrides.architect.is_none());
+        assert!(cfg.safety.overrides.implementer.is_none());
+        assert!(cfg.safety.overrides.security.is_none());
+    }
+
+    #[test]
+    fn safety_section_parses_global_preset() {
+        let raw = r#"
+[safety]
+preset = "fast"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        use conductr_core::safety::SafetyPreset;
+        assert_eq!(cfg.safety.preset, Some(SafetyPreset::Fast));
+    }
+
+    #[test]
+    fn safety_section_parses_overrides() {
+        let raw = r#"
+[safety]
+preset = "fast"
+
+[safety.overrides]
+implementer = "feral"
+security    = "strict"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        use conductr_core::safety::SafetyPreset;
+        assert_eq!(cfg.safety.preset, Some(SafetyPreset::Fast));
+        assert_eq!(cfg.safety.overrides.implementer, Some(SafetyPreset::Feral));
+        assert_eq!(cfg.safety.overrides.security, Some(SafetyPreset::Strict));
+        assert!(cfg.safety.overrides.architect.is_none());
+    }
+
+    #[test]
+    fn safety_overrides_only_no_global_preset() {
+        let raw = r#"
+[safety.overrides]
+architect = "bureaucratic"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        use conductr_core::safety::SafetyPreset;
+        assert!(cfg.safety.preset.is_none());
+        assert_eq!(cfg.safety.overrides.architect, Some(SafetyPreset::Bureaucratic));
+    }
+
+    #[test]
+    fn safety_overrides_doc_writer_and_idle_sweeper_kebab_keys() {
+        let raw = r#"
+[safety.overrides]
+doc-writer   = "strict"
+idle-sweeper = "feral"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        use conductr_core::safety::SafetyPreset;
+        assert_eq!(cfg.safety.overrides.doc_writer, Some(SafetyPreset::Strict));
+        assert_eq!(cfg.safety.overrides.idle_sweeper, Some(SafetyPreset::Feral));
     }
 }
