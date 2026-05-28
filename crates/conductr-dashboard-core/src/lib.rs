@@ -1,3 +1,4 @@
+pub mod assembly;
 pub mod envelope;
 pub mod error;
 pub mod events;
