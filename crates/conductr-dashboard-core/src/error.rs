@@ -73,8 +73,8 @@ impl ApiErrorBody {
 
 #[derive(Debug, Error)]
 pub enum DashboardError {
-    #[error("source unavailable: {source}")]
-    SourceUnavailable { source: String },
+    #[error("source unavailable: {name}")]
+    SourceUnavailable { name: String },
     #[error("not found: {0}")]
     NotFound(String),
     #[error("internal error: {0}")]
