@@ -5,6 +5,8 @@ mod config;
 mod idle;
 mod local_detect;
 mod parity;
+mod registry;
+mod setup_spawn;
 mod tempo_profile;
 mod wiring;
 
@@ -1089,6 +1091,23 @@ enum SetupCmd {
         #[arg(long)]
         repo: Option<PathBuf>,
     },
+    /// Provision all active projects in the machine-wide `~/.conductr` registry.
+    Spawn(SpawnArgs),
+}
+
+#[derive(Debug, Parser)]
+struct SpawnArgs {
+    /// Provision only the project with this tag (omit for all active projects).
+    tag: Option<String>,
+    /// Print plan only; don't make any changes.
+    #[arg(long)]
+    dry_run: bool,
+    /// Also attempt to provision pending entries (skipped by default).
+    #[arg(long)]
+    include_pending: bool,
+    /// Path to the registry file (defaults to `~/.conductr`).
+    #[arg(long)]
+    registry: Option<PathBuf>,
 }
 
 async fn run_setup(args: SetupArgs) -> Result<()> {
@@ -1123,7 +1142,29 @@ async fn run_setup(args: SetupArgs) -> Result<()> {
             let repo = resolve_repo(repo)?;
             conductr_setup::fixes::install_claude_app(&repo, false)?;
         }
+        SetupCmd::Spawn(a) => run_setup_spawn(a).await?,
     }
+    Ok(())
+}
+
+async fn run_setup_spawn(args: SpawnArgs) -> Result<()> {
+    let reg = registry::load(args.registry.as_deref())?;
+
+    let active_count = reg.active().count();
+    let pending_count = reg.pending().count();
+    println!(
+        "registry: {} active, {} pending",
+        active_count, pending_count
+    );
+
+    let opts = setup_spawn::SpawnOptions {
+        dry_run: args.dry_run,
+        tag_filter: args.tag,
+        include_pending: args.include_pending,
+    };
+
+    let reports = setup_spawn::run(&reg, &opts).await?;
+    setup_spawn::print_report(&reports);
     Ok(())
 }
 
