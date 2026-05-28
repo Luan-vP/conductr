@@ -118,6 +118,7 @@ fn apply_fix(id: &str, repo: &Path, dry_run: bool) -> Result<()> {
         "codeowners" => fixes::add_codeowners(repo, dry_run),
         "claude-app" => fixes::install_claude_app(repo, dry_run),
         "claude-workflow" => fixes::add_claude_workflow(repo, dry_run),
+        "skills-installed" => fixes::install_skills(repo, dry_run, false),
         other => {
             println!("  [no fix registered for '{other}']");
             Ok(())

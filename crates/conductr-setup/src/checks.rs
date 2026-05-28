@@ -186,6 +186,85 @@ pub fn check_skill_md(repo: &Path) -> MaturityCheckResult {
     if found { pass(check) } else { fail(check, "no skills/<name>/SKILL.md found") }
 }
 
+pub fn check_skills_installed(repo: &Path) -> MaturityCheckResult {
+    let claude_skills = std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".claude").join("skills"));
+    check_skills_installed_with(repo, claude_skills.as_deref())
+}
+
+pub(crate) fn check_skills_installed_with(
+    repo: &Path,
+    claude_skills: Option<&Path>,
+) -> MaturityCheckResult {
+    let check = MaturityCheck::new(
+        "skills-installed",
+        MaturityLevel::L4Skilled,
+        "all skills/<name>/ are symlinked into ~/.claude/skills/",
+        true,
+    );
+
+    let skills_dir = repo.join("skills");
+    let skill_names: Vec<String> = match skills_dir.read_dir() {
+        Ok(d) => d
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().join("SKILL.md").exists())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect(),
+        Err(_) => return fail(check, "skills/ directory not found"),
+    };
+
+    if skill_names.is_empty() {
+        return pass(check);
+    }
+
+    let claude_skills = match claude_skills {
+        Some(p) => p,
+        None => return fail(check, "$HOME is not set — cannot locate ~/.claude/skills/"),
+    };
+
+    if !claude_skills.parent().map_or(false, |p| p.exists()) {
+        return fail(check, "~/.claude not found — is Claude Code installed?");
+    }
+
+    let mut not_linked: Vec<String> = Vec::new();
+
+    for name in &skill_names {
+        let expected = match repo.join("skills").join(name).canonicalize() {
+            Ok(p) => p,
+            Err(_) => repo.join("skills").join(name),
+        };
+        let link_path = claude_skills.join(name);
+
+        match std::fs::read_link(&link_path) {
+            Ok(target) => {
+                let abs_target = if target.is_absolute() {
+                    target.clone()
+                } else {
+                    link_path.parent().unwrap_or(Path::new("/")).join(&target)
+                };
+                let canonical = abs_target.canonicalize().unwrap_or(abs_target);
+                if canonical != expected {
+                    not_linked.push(format!("{name} (symlink points elsewhere)"));
+                }
+            }
+            Err(_) => {
+                if link_path.exists() {
+                    not_linked.push(format!("{name} (real path, not a symlink)"));
+                } else {
+                    not_linked.push(name.clone());
+                }
+            }
+        }
+    }
+
+    if not_linked.is_empty() {
+        pass(check)
+    } else {
+        fail(check, format!("not linked: {}", not_linked.join(", ")))
+    }
+}
+
 pub fn check_claude_agents(repo: &Path) -> MaturityCheckResult {
     let check = MaturityCheck::new(
         "claude-agents",
@@ -298,6 +377,151 @@ fn validate_ci_runs(value: &toml::Value) -> Option<String> {
     None
 }
 
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn make_skill(repo: &Path, name: &str) {
+        let dir = repo.join("skills").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), format!("# {name}")).unwrap();
+    }
+
+    #[test]
+    fn no_skills_dir_fails() {
+        let tmp = TempDir::new().unwrap();
+        let result = check_skills_installed_with(tmp.path(), Some(&tmp.path().join("claude/skills")));
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn no_claude_parent_fails() {
+        let tmp = TempDir::new().unwrap();
+        make_skill(tmp.path(), "idle");
+        let nonexistent = tmp.path().join("no-claude").join("skills");
+        let result = check_skills_installed_with(tmp.path(), Some(&nonexistent));
+        assert!(!result.passed);
+        assert!(result.detail.unwrap_or_default().contains("not found"));
+    }
+
+    #[test]
+    fn home_not_set_fails() {
+        let tmp = TempDir::new().unwrap();
+        make_skill(tmp.path(), "idle");
+        let result = check_skills_installed_with(tmp.path(), None);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn no_skills_passes_vacuously() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("skills")).unwrap();
+        let claude_skills = tmp.path().join("claude").join("skills");
+        fs::create_dir_all(&claude_skills).unwrap();
+        let result = check_skills_installed_with(tmp.path(), Some(&claude_skills));
+        assert!(result.passed);
+    }
+
+    #[test]
+    fn skill_without_skill_md_skipped() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("skills").join("noskillmd")).unwrap();
+        let claude_skills = tmp.path().join("claude").join("skills");
+        fs::create_dir_all(&claude_skills).unwrap();
+        let result = check_skills_installed_with(tmp.path(), Some(&claude_skills));
+        assert!(result.passed, "dir without SKILL.md should be ignored");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn correct_symlink_passes() {
+        let tmp = TempDir::new().unwrap();
+        make_skill(tmp.path(), "idle");
+        let claude_skills = tmp.path().join("claude").join("skills");
+        fs::create_dir_all(&claude_skills).unwrap();
+        let skill_abs = tmp.path().join("skills").join("idle").canonicalize().unwrap();
+        std::os::unix::fs::symlink(&skill_abs, claude_skills.join("idle")).unwrap();
+        let result = check_skills_installed_with(tmp.path(), Some(&claude_skills));
+        assert!(result.passed, "correct symlink should pass: {:?}", result.detail);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_symlink_fails() {
+        let tmp = TempDir::new().unwrap();
+        make_skill(tmp.path(), "idle");
+        let claude_skills = tmp.path().join("claude").join("skills");
+        fs::create_dir_all(&claude_skills).unwrap();
+        let result = check_skills_installed_with(tmp.path(), Some(&claude_skills));
+        assert!(!result.passed);
+        assert!(result.detail.unwrap_or_default().contains("idle"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wrong_symlink_fails() {
+        let tmp = TempDir::new().unwrap();
+        make_skill(tmp.path(), "idle");
+        let claude_skills = tmp.path().join("claude").join("skills");
+        fs::create_dir_all(&claude_skills).unwrap();
+        let other_dir = tmp.path().join("other");
+        fs::create_dir_all(&other_dir).unwrap();
+        std::os::unix::fs::symlink(&other_dir, claude_skills.join("idle")).unwrap();
+        let result = check_skills_installed_with(tmp.path(), Some(&claude_skills));
+        assert!(!result.passed);
+        assert!(result.detail.unwrap_or_default().contains("elsewhere"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_dir_instead_of_symlink_fails() {
+        let tmp = TempDir::new().unwrap();
+        make_skill(tmp.path(), "idle");
+        let claude_skills = tmp.path().join("claude").join("skills");
+        fs::create_dir_all(claude_skills.join("idle")).unwrap();
+        let result = check_skills_installed_with(tmp.path(), Some(&claude_skills));
+        assert!(!result.passed);
+        assert!(result.detail.unwrap_or_default().contains("real path"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn multiple_skills_all_linked_passes() {
+        let tmp = TempDir::new().unwrap();
+        for name in &["idle", "orchestrate", "pod"] {
+            make_skill(tmp.path(), name);
+        }
+        let claude_skills = tmp.path().join("claude").join("skills");
+        fs::create_dir_all(&claude_skills).unwrap();
+        for name in &["idle", "orchestrate", "pod"] {
+            let skill_abs = tmp.path().join("skills").join(name).canonicalize().unwrap();
+            std::os::unix::fs::symlink(&skill_abs, claude_skills.join(name)).unwrap();
+        }
+        let result = check_skills_installed_with(tmp.path(), Some(&claude_skills));
+        assert!(result.passed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn partial_links_fails() {
+        let tmp = TempDir::new().unwrap();
+        make_skill(tmp.path(), "idle");
+        make_skill(tmp.path(), "orchestrate");
+        let claude_skills = tmp.path().join("claude").join("skills");
+        fs::create_dir_all(&claude_skills).unwrap();
+        let idle_abs = tmp.path().join("skills").join("idle").canonicalize().unwrap();
+        std::os::unix::fs::symlink(&idle_abs, claude_skills.join("idle")).unwrap();
+        // orchestrate is NOT linked
+        let result = check_skills_installed_with(tmp.path(), Some(&claude_skills));
+        assert!(!result.passed);
+        assert!(result.detail.unwrap_or_default().contains("orchestrate"));
+    }
+}
+
 // ── Catalogue + bulk runner ───────────────────────────────────────────────────
 
 /// Run every check against `repo` and return results in level order.
@@ -312,6 +536,7 @@ pub fn run_all(repo: &Path) -> Vec<MaturityCheckResult> {
         check_contributing(repo),
         check_codeowners(repo),
         check_skill_md(repo),
+        check_skills_installed(repo),
         check_claude_agents(repo),
         check_claude_app(repo),
         check_claude_workflow(repo),
