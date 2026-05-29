@@ -11,8 +11,8 @@
         "title": "feat(safety): SafetyPreset enum + maturity resolver",
         "body": "Implements #172.\n\nAdds the SafetyPreset enum (UNHINGED · FERAL · FAST · STRICT · BUREAUCRATIC) plus the .conductr [safety] parser and resolve_preset(...).",
         "head_ref": "claude/172-safety-schema",
-        "state": "Open",
-        "ci": "Success",
+        "state": "open",
+        "ci": "passing",
         "linked_issue": 172
       },
       {
@@ -20,8 +20,8 @@
         "title": "chore: bump tracing-subscriber 0.3.18 -> 0.3.19",
         "body": "Idle maintenance pass.",
         "head_ref": "idle/ops/cargo-update-2026-05-27",
-        "state": "Open",
-        "ci": "Success",
+        "state": "open",
+        "ci": "passing",
         "linked_issue": null
       }
     ],
@@ -31,8 +31,8 @@
         "title": "feat(safety): per-detent branch isolation",
         "body": "Implements #173.",
         "head_ref": "claude/173-branch-isolation",
-        "state": "Open",
-        "ci": "Failure",
+        "state": "open",
+        "ci": "failing",
         "linked_issue": 173
       }
     ],
@@ -42,8 +42,8 @@
         "title": "feat(idle): maintenance ops phase 5",
         "body": "Stale; rebase needed against develop.",
         "head_ref": "claude/145-idle-ops",
-        "state": "Open",
-        "ci": "Success",
+        "state": "open",
+        "ci": "passing",
         "linked_issue": 145
       }
     ],
@@ -53,8 +53,8 @@
         "title": "WIP: dashboard-api fixtures",
         "body": "",
         "head_ref": "claude/146-api-contract",
-        "state": "Open",
-        "ci": "Pending",
+        "state": "open",
+        "ci": "pending",
         "linked_issue": 146
       }
     ]

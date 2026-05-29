@@ -15,7 +15,7 @@
           "cwd": "/home/luan/conductr"
         },
         "health": {
-          "kind": "Working",
+          "kind": "working",
           "activity": "running implementer beat"
         },
         "idle_seconds": 18,
@@ -36,9 +36,9 @@
           "cwd": "/home/luan/conductr"
         },
         "health": {
-          "kind": "Idle",
+          "kind": "idle",
           "last_message": "scan complete; 0 new findings",
-          "tokens": 4218
+          "tokens": "4218"
         },
         "idle_seconds": 7200,
         "tail": [
@@ -57,7 +57,7 @@
           "cwd": "/home/luan/conductr"
         },
         "health": {
-          "kind": "Crashed",
+          "kind": "crashed",
           "last_shell_line": "thread 'main' panicked at 'beads adapter timed out', crates/conductr-adapters/src/beads.rs:142:5"
         },
         "idle_seconds": 55677,

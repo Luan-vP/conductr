@@ -7,7 +7,7 @@
     {
       "title": "conductr-pod missing port trait",
       "body": "`crates/conductr-pod/src/lib.rs:42` calls `gh_cli.list_open_prs` directly; per hex rule #2 the use-case crate must go through a port trait. Suggested fix: introduce `ScmRead` port in conductr-core::ports and inject the adapter.",
-      "severity": "Architecture",
+      "severity": "architecture",
       "fingerprint": "arch-pod-direct-gh-2026-05",
       "issue_number": 187,
       "repo": { "owner": "luan-vp", "repo": "conductr" },
@@ -16,7 +16,7 @@
     {
       "title": "clippy: needless_lifetimes in calendar adapter",
       "body": "`crates/conductr-adapters/src/gcal.rs:88` — the `'a` lifetime can be elided.",
-      "severity": "Quality",
+      "severity": "quality",
       "fingerprint": "clippy-gcal-lifetime-2026-05",
       "issue_number": 191,
       "repo": { "owner": "luan-vp", "repo": "conductr" },
@@ -25,11 +25,20 @@
     {
       "title": "coverage: 14 uncovered lines in conductr-schedule pattern parser",
       "body": "Module `pattern.rs` has 14 uncovered lines (cov 71%, threshold 85%). Bulk of misses are error-path branches in `parse_repeat`.",
-      "severity": "Coverage",
+      "severity": "coverage",
       "fingerprint": "cov-schedule-pattern-2026-05",
       "issue_number": null,
       "repo": { "owner": "luan-vp", "repo": "conductr" },
       "first_seen": "2026-05-27T11:30:01Z"
+    },
+    {
+      "title": "security: daemon HTTP endpoint lacks authentication",
+      "body": "`crates/conductr-daemon/src/http.rs` binds on `0.0.0.0:7890` without any auth middleware. Local-network peers can read full dashboard state without credentials.",
+      "severity": "security",
+      "fingerprint": "sec-daemon-no-auth-2026-05",
+      "issue_number": null,
+      "repo": { "owner": "luan-vp", "repo": "conductr" },
+      "first_seen": "2026-05-27T13:00:00Z"
     }
   ]
 }

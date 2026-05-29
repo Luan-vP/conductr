@@ -118,6 +118,9 @@ impl FindingEntry {
     }
 }
 
+/// Wire alias used in fixtures and test helpers; identical to `FindingEntry`.
+pub type WireFinding = FindingEntry;
+
 // ── §4.5 Pod / tmux ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +144,19 @@ pub struct StaffHit {
     pub at: DateTime<Utc>,
     pub duration_seconds: Option<f64>,
     pub glyph: StaffGlyph,
+}
+
+impl StaffHit {
+    /// `Head` glyphs must carry a duration (they open a tied-note group).
+    pub fn validate(&self) -> Result<(), String> {
+        if matches!(self.glyph, StaffGlyph::Head) && self.duration_seconds.is_none() {
+            return Err(format!(
+                "StaffHit at {} has glyph 'head' but no duration_seconds",
+                self.at
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

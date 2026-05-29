@@ -49,8 +49,8 @@
             "title": "feat(safety): SafetyPreset enum + maturity resolver",
             "body": "Implements #172.\n\nAdds the SafetyPreset enum...",
             "head_ref": "claude/172-safety-schema",
-            "state": "Open",
-            "ci": "Success",
+            "state": "open",
+            "ci": "passing",
             "linked_issue": 172
           }
         ],
@@ -63,7 +63,7 @@
       {
         "title": "conductr-pod missing port trait",
         "body": "`crates/conductr-pod/src/lib.rs` calls `gh_cli.list_open_prs` directly; should go through a port.",
-        "severity": "Architecture",
+        "severity": "architecture",
         "fingerprint": "arch-pod-direct-gh-2026-05",
         "issue_number": 187,
         "repo": { "owner": "luan-vp", "repo": "conductr" },
@@ -81,7 +81,7 @@
             "attached": false,
             "cwd": "/home/luan/conductr"
           },
-          "health": { "kind": "Working", "activity": "running implementer beat" },
+          "health": { "kind": "working", "activity": "running implementer beat" },
           "idle_seconds": 18,
           "tail": [
             "$ cargo build --workspace",
