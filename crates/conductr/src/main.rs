@@ -1108,6 +1108,14 @@ struct SpawnArgs {
     /// Path to the registry file (defaults to `~/.conductr`).
     #[arg(long)]
     registry: Option<PathBuf>,
+    /// Override the command booted into freshly-created sessions. Defaults to
+    /// Remote Control + `auto` permission mode so the session is immediately
+    /// driveable. Ignored for sessions that already exist.
+    #[arg(long)]
+    command: Option<String>,
+    /// Create sessions but leave them at a shell prompt instead of booting Claude.
+    #[arg(long)]
+    no_launch: bool,
 }
 
 async fn run_setup(args: SetupArgs) -> Result<()> {
@@ -1157,10 +1165,20 @@ async fn run_setup_spawn(args: SpawnArgs) -> Result<()> {
         active_count, pending_count
     );
 
+    let launch_command = if args.no_launch {
+        None
+    } else {
+        Some(
+            args.command
+                .unwrap_or_else(|| setup_spawn::DEFAULT_LAUNCH_COMMAND.to_string()),
+        )
+    };
+
     let opts = setup_spawn::SpawnOptions {
         dry_run: args.dry_run,
         tag_filter: args.tag,
         include_pending: args.include_pending,
+        launch_command,
     };
 
     let reports = setup_spawn::run(&reg, &opts).await?;

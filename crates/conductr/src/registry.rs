@@ -36,6 +36,14 @@ pub struct RegistryProject {
     pub status: ProjectStatus,
 }
 
+impl RegistryProject {
+    /// Tmux session name for this project, per the `conductr-<tag>` convention.
+    /// Shared by `setup spawn` (ensure-session) and `pod heal` (restart pass).
+    pub fn session_name(&self) -> String {
+        format!("conductr-{}", self.tag)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct RegistryDefaults {
     pub human_assignee: Option<String>,
@@ -117,6 +125,14 @@ impl Registry {
     pub fn find_by_tag(&self, tag: &str) -> Option<&RegistryProject> {
         self.projects.iter().find(|p| p.tag == tag)
     }
+
+    /// Find a project by its `owner/name` GitHub slug (case-sensitive). Used by
+    /// `pod heal --repo`, which scopes work by slug rather than tag. Allowed
+    /// dead until the heal rewrite lands on top of this foundation.
+    #[allow(dead_code)]
+    pub fn find_by_repo(&self, repo: &str) -> Option<&RegistryProject> {
+        self.projects.iter().find(|p| p.repo == repo)
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -187,6 +203,20 @@ status = "pending"
     }
 
     #[test]
+    fn find_by_repo_returns_correct_project() {
+        let reg = parse(FIXTURE_REGISTRY).unwrap();
+        let p = reg.find_by_repo("Luan-vP/myapp").unwrap();
+        assert_eq!(p.tag, "myapp");
+        assert!(reg.find_by_repo("owner/nope").is_none());
+    }
+
+    #[test]
+    fn session_name_uses_conductr_prefix() {
+        let reg = parse(FIXTURE_REGISTRY).unwrap();
+        assert_eq!(reg.find_by_tag("myapp").unwrap().session_name(), "conductr-myapp");
+    }
+
+    #[test]
     fn rejects_duplicate_tags() {
         let content = r#"
 [[projects]]
@@ -207,9 +237,21 @@ status = "pending"
 
     #[test]
     fn missing_path_detected() {
-        let reg = parse(FIXTURE_REGISTRY).unwrap();
-        let p = reg.find_by_tag("conductr").unwrap();
-        // /home/dev/developer/conductr should not exist in the test environment.
+        // A registry path absent from disk is observably missing — `setup spawn`
+        // keys its clone step off exactly this `Path::exists` check. Use a path
+        // that cannot exist rather than a real-looking one, which is present on
+        // a machine that actually hosts the project.
+        let reg = parse(
+            r#"
+[[projects]]
+tag    = "ghost"
+repo   = "owner/ghost"
+path   = "/nonexistent/owner/ghost"
+status = "active"
+"#,
+        )
+        .unwrap();
+        let p = reg.find_by_tag("ghost").unwrap();
         assert!(!p.path.exists());
     }
 
