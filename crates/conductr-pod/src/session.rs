@@ -40,3 +40,76 @@ pub async fn ensure_session(
         Ok(SessionState::Created)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const IDLE_PANE: &str = r#"
+           Claude Code v2.1.114
+ ▐▛███▜▌   Opus 4.7 (1M context) · Claude Max
+▝▜█████▛▘  ~/developer/foo
+
+❯ /clear
+  ⎿  (no content)
+
+────────────────────────────────────────────────────────────────────────────────
+❯ make one more
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)
+  ✗ Auto-update failed
+                                        new task? /clear to save 174.5k tokens
+"#;
+
+    #[tokio::test]
+    async fn ensure_creates_missing_session() {
+        use conductr_adapters::mock::MockTmuxAgent;
+        let mock = MockTmuxAgent::new(); // no sessions
+        let state = ensure_session(&mock, "conductr-demo", "/tmp").await.unwrap();
+        assert!(matches!(state, SessionState::Created));
+    }
+
+    #[tokio::test]
+    async fn ensure_reuses_existing_idle_session() {
+        use conductr_adapters::mock::MockTmuxAgent;
+        let mock = MockTmuxAgent::new().with_session("conductr-demo", IDLE_PANE);
+        let state = ensure_session(&mock, "conductr-demo", "/tmp").await.unwrap();
+        assert!(
+            matches!(state, SessionState::Existing(Health::Idle { .. })),
+            "expected Existing(Idle), got {state:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_is_idempotent_second_call_returns_existing() {
+        use conductr_adapters::mock::MockTmuxAgent;
+        let mock = MockTmuxAgent::new();
+
+        // First call: session missing → Created
+        let first = ensure_session(&mock, "conductr-demo", "/tmp").await.unwrap();
+        assert!(matches!(first, SessionState::Created));
+
+        // Second call: session now exists (created by first call with empty pane)
+        let second = ensure_session(&mock, "conductr-demo", "/tmp").await.unwrap();
+        // Session exists but pane is empty → Unknown (not an error, just unclassified)
+        assert!(
+            matches!(second, SessionState::Existing(_)),
+            "second call should return Existing, got {second:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_does_not_create_session_that_already_exists() {
+        use conductr_adapters::mock::MockTmuxAgent;
+        let mock = MockTmuxAgent::new().with_session("conductr-demo", IDLE_PANE);
+
+        // Call twice — both should return Existing, not Created.
+        for _ in 0..2 {
+            let state = ensure_session(&mock, "conductr-demo", "/tmp").await.unwrap();
+            assert!(
+                matches!(state, SessionState::Existing(_)),
+                "expected Existing on repeated calls, got {state:?}"
+            );
+        }
+    }
+}

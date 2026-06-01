@@ -1,0 +1,105 @@
+use anyhow::Result;
+use async_trait::async_trait;
+use chrono::Utc;
+use conductr_dashboard_core::{model::CronEntry, SseEvent};
+use tokio::sync::broadcast;
+
+use crate::state::SharedState;
+use super::Aggregator;
+
+/// Reads the user's crontab and extracts entries tagged with
+/// `# conductr-cron:` markers.
+pub struct CronAggregator;
+
+impl CronAggregator {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Aggregator for CronAggregator {
+    async fn refresh(
+        &self,
+        state: &SharedState,
+        _tx: &broadcast::Sender<SseEvent>,
+    ) -> Result<()> {
+        let entries = read_crontab().await.unwrap_or_default();
+        state.write().await.cron = entries;
+        Ok(())
+    }
+}
+
+async fn read_crontab() -> Result<Vec<CronEntry>> {
+    let out = tokio::process::Command::new("crontab")
+        .arg("-l")
+        .output()
+        .await;
+
+    let out = match out {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if stderr.contains("no crontab") {
+                return Ok(Vec::new());
+            }
+            anyhow::bail!("crontab -l failed: {}", stderr);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    Ok(parse_crontab(&stdout))
+}
+
+fn parse_crontab(text: &str) -> Vec<CronEntry> {
+    let mut entries = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        // Skip pure comment lines and empty lines
+        if trimmed.is_empty() || (trimmed.starts_with('#') && !trimmed.contains("conductr-cron:")) {
+            continue;
+        }
+        // Only include lines that have a conductr-cron marker (inline comment style)
+        if !trimmed.contains("conductr-cron:") {
+            continue;
+        }
+        // Extract the marker text
+        let marker = trimmed
+            .split('#')
+            .find(|s| s.contains("conductr-cron:"))
+            .map(|s| format!("# {}", s.trim()))
+            .unwrap_or_default();
+
+        if let Some(entry) = parse_cron_line(trimmed, &marker) {
+            entries.push(entry);
+        }
+    }
+    entries
+}
+
+fn parse_cron_line(line: &str, marker: &str) -> Option<CronEntry> {
+    // Strip inline comment for parsing
+    let code_part = line.split('#').next().unwrap_or(line).trim();
+    let parts: Vec<&str> = code_part.splitn(6, ' ').collect();
+    if parts.len() < 6 {
+        return None;
+    }
+    let expression = parts[..5].join(" ");
+    let command = parts[5..].join(" ").trim().to_string();
+    if command.is_empty() {
+        return None;
+    }
+
+    // Rough next-fire: just use now+1min as placeholder (real scheduling is complex)
+    let next_fire = Utc::now() + chrono::Duration::minutes(1);
+
+    Some(CronEntry {
+        expression,
+        command,
+        marker: marker.to_string(),
+        next_fire,
+    })
+}

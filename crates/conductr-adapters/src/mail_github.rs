@@ -98,6 +98,7 @@ fn kind_tag(kind: &MailKind) -> &'static str {
         MailKind::SynthesisRequest { .. } => "synthesis_request",
         MailKind::SynthesisProposal { .. } => "synthesis_proposal",
         MailKind::Note { .. } => "note",
+        MailKind::Yell { .. } => "yell",
     }
 }
 

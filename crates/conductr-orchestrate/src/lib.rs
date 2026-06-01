@@ -11,10 +11,12 @@
 //! the orchestration loop is unit-testable without hitting the network.
 
 pub mod architect;
+pub mod ci_gate;
 pub mod classifier;
 pub mod deps;
 pub mod dispatch;
 pub mod graph;
+pub mod isolation;
 pub mod orchestrator;
 pub mod tempo;
 pub mod types;
@@ -22,6 +24,7 @@ pub mod types;
 pub use conductr_core::ports::ScmHost;
 pub use conductr_core::types::*;
 pub use architect::{cluster_issues, complexity_for, infer_phrases, phrase_id_from_title, Phrase};
+pub use ci_gate::can_merge;
 pub use classifier::classify;
 pub use deps::{parse_dependencies, DepRef};
 pub use graph::topo_batches;

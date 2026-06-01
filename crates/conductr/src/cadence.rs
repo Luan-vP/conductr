@@ -733,22 +733,28 @@ fn generate_lines(cfg: &ConductrConfig, log_dir: &str) -> Vec<(String, String)> 
 }
 
 /// Build the command that the installed cron line invokes directly.
-/// `orchestrate` requires `--repo` (reads the slug from `.conductr`) and `--once`
-/// for cron operation; all other skills are invoked as `conductr <skill>` with no
-/// extra args (they read their config from `.conductr`).
-fn task_command(task: &str, _project_tag: &str, repo: Option<&str>) -> String {
+///
+/// `orchestrate` and `idle` are wrapped in `conductr pod ensure-session <tag>` so
+/// the `conductr-<tag>` tmux session is guaranteed to exist and have Claude running
+/// before the work starts.  The `--then` argument is dispatched after session
+/// bootstrap: a `/`-prefixed command is sent as keys to the live Claude pane
+/// (skill dispatch); any other command runs as a subprocess.
+///
+/// All other skills are invoked as `conductr <skill>` with no extra args.
+fn task_command(task: &str, project_tag: &str, repo: Option<&str>) -> String {
     match task {
         "orchestrate" => {
-            let mut cmd = "conductr orchestrate".to_string();
+            let mut inner = "conductr orchestrate".to_string();
             if let Some(r) = repo {
-                cmd.push_str(" --repo ");
-                cmd.push_str(r);
+                inner.push_str(" --repo ");
+                inner.push_str(r);
             }
-            cmd.push_str(" --once");
-            cmd
+            inner.push_str(" --once");
+            format!("conductr pod ensure-session {project_tag} --then \"{inner}\"")
         }
-        // `idle` drives self-directed scan; reads repo from .conductr, no --tag needed.
-        "idle" => "conductr idle".to_string(),
+        "idle" => {
+            format!("conductr pod ensure-session {project_tag} --then \"/idle\"")
+        }
         other => format!("conductr {other}"),
     }
 }
@@ -887,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn orchestrate_emits_direct_invocation_with_repo_and_once() {
+    fn orchestrate_wraps_in_ensure_session_with_repo_and_once() {
         let lines = generate_lines(
             &cfg("conductr", Some("Luan-vP/conductr"), &[("orchestrate", "0 */2 * * *")]),
             "/tmp/log",
@@ -895,6 +901,10 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let (marker, line) = &lines[0];
         assert_eq!(marker, "# conductr-cron: conductr-orchestrate");
+        // Wraps in ensure-session so the conductr-conductr tmux session is live.
+        assert!(line.contains("ensure-session conductr"), "should use ensure-session: {line}");
+        assert!(line.contains("--then"), "should have --then: {line}");
+        // The inner orchestrate command appears inside --then.
         assert!(line.contains("conductr orchestrate --repo Luan-vP/conductr --once"), "got: {line}");
         assert!(!line.contains("begin"), "line should not reference 'begin': {line}");
         assert!(line.starts_with("0 */2 * * *"));
@@ -906,17 +916,30 @@ mod tests {
         let lines =
             generate_lines(&cfg("conductr", None, &[("orchestrate", "*/30 * * * *")]), "/tmp/log");
         let (_, line) = &lines[0];
+        assert!(line.contains("ensure-session conductr"), "should use ensure-session: {line}");
         assert!(line.contains("conductr orchestrate --once"), "got: {line}");
         assert!(!line.contains("--repo"), "got: {line}");
     }
 
     #[test]
-    fn other_skill_emits_plain_invocation() {
+    fn idle_dispatched_via_ensure_session() {
         let lines =
             generate_lines(&cfg("conductr", None, &[("idle", "*/30 * * * *")]), "/tmp/log");
         let (_, line) = &lines[0];
-        assert!(line.contains("conductr idle"), "got: {line}");
+        // idle uses ensure-session and sends /idle as a skill command to Claude.
+        assert!(line.contains("ensure-session conductr"), "should use ensure-session: {line}");
+        assert!(line.contains("--then \"/idle\""), "idle should dispatch /idle skill: {line}");
         assert!(!line.contains("--tag"), "line should not have --tag: {line}");
+        assert!(!line.contains("begin"), "line should not reference 'begin': {line}");
+    }
+
+    #[test]
+    fn other_skill_emits_plain_invocation() {
+        let lines =
+            generate_lines(&cfg("conductr", None, &[("tasks", "*/30 * * * *")]), "/tmp/log");
+        let (_, line) = &lines[0];
+        assert!(line.contains("conductr tasks"), "got: {line}");
+        assert!(!line.contains("ensure-session"), "tasks should not use ensure-session: {line}");
         assert!(!line.contains("begin"), "line should not reference 'begin': {line}");
     }
 
