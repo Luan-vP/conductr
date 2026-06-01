@@ -52,14 +52,44 @@ typed or rendered. Don't over-interpret it.
 ### heal
 
 ```
-conductr pod heal                # restart anything classified `crashed`
-conductr pod heal --dry-run      # preview without sending keys
-conductr pod heal --command 'claude --continue'   # custom relaunch command
+conductr pod heal                            # provision (all active) + restart crashed
+conductr pod heal --dry-run                  # preview without making changes
+conductr pod heal --repo Luan-vP/foo         # scope both passes to one project
+conductr pod heal --no-provision             # skip provisioning; restart-only (old behaviour)
+conductr pod heal --command 'claude --continue'   # custom relaunch/launch command
 ```
 
-`heal` only acts on `crashed` sessions. Idle / working sessions are left
-alone. If the user wants to *also* restart healthy sessions (e.g. to pick up
-a new skill), use `save-state` instead.
+`heal` runs two passes:
+
+1. **Provision pass** — delegates to `conductr setup spawn` for every in-scope
+   project in `~/.conductr`: ensures the clone, `.conductr`, cron markers, and
+   `conductr-<tag>` tmux session all exist, booting Claude into any session it
+   creates. Idempotent, so this is what brings *dropped* sessions back. Skipped
+   with `--no-provision`, or when there's no registry (heal then degrades to the
+   old "just restart crashed sessions" behaviour).
+2. **Restart pass** — anything classified `crashed` gets `--command` sent to it.
+   Idle / working sessions are left alone. Sessions the provision pass just
+   created are excluded here (they were already launched).
+
+`--command` feeds both passes and defaults to
+`claude --remote-control --permission-mode auto`, so restored sessions come up
+with Remote Control enabled in `auto` permission mode — immediately driveable by
+orchestrate.
+
+The in-scope set is determined by `--repo`:
+
+- **without `--repo`**: every `status = "active"` entry in `~/.conductr`.
+- **with `--repo owner/name`**: just that one active entry. Errors if no active
+  project has the slug. The restart pass is exact-name matched on
+  `conductr-<tag>`, so sibling sessions (`conductr-foo-dashboard-*`) aren't
+  collateral damage.
+
+`--json` emits `{ "provision": ProjectReport[], "heal": HealOutcome[] }` — the
+provision reports share the `setup spawn` step schema (`clone` · `dot-conductr`
+· `cadence` · `session` · `launch`).
+
+`heal` only ever *restarts* crashed sessions; it won't bounce a healthy one. To
+restart healthy sessions too (e.g. to pick up a new skill), use `save-state`.
 
 ### save-state
 

@@ -55,11 +55,36 @@ vendor/
 
 ## Setup
 
+### Single-repo quickstart
+
 ```bash
 git clone --recurse-submodules https://github.com/Luan-vP/conductr.git
 cd conductr && cargo build --workspace --release
 ./target/release/conductr --help
 ```
+
+### Multi-project quickstart (new machine)
+
+Bring every active project on this host to a running state in one command:
+
+```bash
+# 1. Write ~/.conductr listing your projects (see docs/registry.md for schema).
+# 2. Install conductr, then:
+conductr setup spawn
+```
+
+`spawn` clones missing repos, generates per-repo `.conductr` files from your
+`[defaults]`, installs cron entries via `cadence sync`, and creates the tmux
+sessions. Claude is started on the first cron fire. The command is idempotent —
+run it again on an already-provisioned machine and it reports `✓ already provisioned`
+for each project.
+
+```bash
+conductr setup spawn --dry-run    # preview the plan first
+conductr setup spawn <tag>        # provision a single project by tag
+```
+
+See [`docs/registry.md`](docs/registry.md) for the full registry schema.
 
 ## Build
 
