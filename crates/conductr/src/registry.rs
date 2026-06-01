@@ -127,9 +127,7 @@ impl Registry {
     }
 
     /// Find a project by its `owner/name` GitHub slug (case-sensitive). Used by
-    /// `pod heal --repo`, which scopes work by slug rather than tag. Allowed
-    /// dead until the heal rewrite lands on top of this foundation.
-    #[allow(dead_code)]
+    /// `pod heal --repo`, which scopes work by slug rather than tag.
     pub fn find_by_repo(&self, repo: &str) -> Option<&RegistryProject> {
         self.projects.iter().find(|p| p.repo == repo)
     }
