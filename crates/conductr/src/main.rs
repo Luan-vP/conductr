@@ -10,7 +10,7 @@ mod setup_spawn;
 mod tempo_profile;
 mod wiring;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -356,12 +356,25 @@ struct HealArgs {
     /// Show the plan without sending keys.
     #[arg(long)]
     dry_run: bool,
-    /// Command typed into the pane to bring Claude back up.
-    #[arg(long, default_value = "claude")]
-    command: String,
+    /// Command typed into the pane to bring Claude back up. Feeds both the
+    /// provision pass's session launch and the restart pass. Defaults to Remote
+    /// Control + `auto` permission mode so restored sessions are driveable.
+    #[arg(long)]
+    command: Option<String>,
     /// Emit machine-readable JSON instead of a table.
     #[arg(long)]
     json: bool,
+    /// Scope all passes to a single project by `owner/name` slug. Errors if the
+    /// slug is not an `active` project in `~/.conductr`.
+    #[arg(long)]
+    repo: Option<String>,
+    /// Skip the idempotent provision pass (clone / `.conductr` / cron / spawn)
+    /// and only run the restart pass on already-existing sessions.
+    #[arg(long)]
+    no_provision: bool,
+    /// Path to the registry file (defaults to `~/.conductr`).
+    #[arg(long)]
+    registry: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -697,21 +710,136 @@ async fn run_free(args: FreeArgs) -> Result<()> {
     }
 }
 
+/// The registry-derived scope of a heal invocation.
+#[derive(Debug)]
+struct HealScope {
+    registry: registry::Registry,
+    /// `Some(tag)` provisions a single project; `None` provisions all active.
+    tag_filter: Option<String>,
+    /// `Some(session)` when `--repo` is set: the restart pass is exact-name
+    /// matched on this `conductr-<tag>` so sibling sessions aren't collateral.
+    scoped_session: Option<String>,
+}
+
+/// Resolve which projects this heal invocation provisions.
+///
+/// - No `--repo`, no registry → `None`: heal degrades to its old "just restart
+///   crashed sessions" behaviour (no provision pass).
+/// - No `--repo` with a registry → all `active` projects.
+/// - `--repo <slug>` → the single matching `active` project, or an error if the
+///   slug is missing / `pending` / the registry is absent.
+fn resolve_heal_scope(repo: Option<&str>, registry_path: Option<&Path>) -> Result<Option<HealScope>> {
+    let reg = match registry::load(registry_path) {
+        Ok(r) => r,
+        Err(e) => {
+            if repo.is_some() {
+                return Err(e.context("--repo requires a readable ~/.conductr registry"));
+            }
+            // No registry: provision pass is a no-op, restart pass still runs.
+            return Ok(None);
+        }
+    };
+
+    match repo {
+        None => Ok(Some(HealScope { registry: reg, tag_filter: None, scoped_session: None })),
+        Some(slug) => match reg.find_by_repo(slug) {
+            Some(p) if p.status == registry::ProjectStatus::Active => {
+                let scope = HealScope {
+                    tag_filter: Some(p.tag.clone()),
+                    scoped_session: Some(p.session_name()),
+                    registry: reg,
+                };
+                Ok(Some(scope))
+            }
+            Some(_) => anyhow::bail!(
+                "project '{slug}' is pending — promote it with `status = \"active\"` in ~/.conductr"
+            ),
+            None => anyhow::bail!("no active project with repo '{slug}' in ~/.conductr"),
+        },
+    }
+}
+
 async fn run_heal(args: HealArgs) -> Result<()> {
     let tmux = Tmux::new();
-    let pattern = pod_pattern(args.pattern.as_deref(), args.all);
-    let outcomes = heal_all(&tmux, pattern, &args.command, args.dry_run).await?;
+    let command = args
+        .command
+        .clone()
+        .unwrap_or_else(|| setup_spawn::DEFAULT_LAUNCH_COMMAND.to_string());
+
+    let scope = resolve_heal_scope(args.repo.as_deref(), args.registry.as_deref())?;
+
+    // Pass 1 — idempotent provision (clone / .conductr / cron / spawn + launch),
+    // delegated wholesale to `setup spawn`. Skipped when there's no registry
+    // scope or `--no-provision` is set.
+    let provision: Vec<setup_spawn::ProjectReport> = match &scope {
+        Some(s) if !args.no_provision => {
+            let opts = setup_spawn::SpawnOptions {
+                dry_run: args.dry_run,
+                tag_filter: s.tag_filter.clone(),
+                include_pending: false,
+                launch_command: Some(command.clone()),
+            };
+            setup_spawn::run(&s.registry, &opts).await?
+        }
+        _ => Vec::new(),
+    };
+
+    // Sessions the provision pass just created already had `command` launched
+    // into them. Exclude them from the restart pass so their not-yet-rendered
+    // panes aren't misread as crashed and double-launched.
+    let freshly_launched: std::collections::HashSet<&str> = provision
+        .iter()
+        .filter(|p| {
+            p.steps.iter().any(|s| {
+                s.step == "launch"
+                    && matches!(
+                        s.status,
+                        setup_spawn::StepStatus::Done | setup_spawn::StepStatus::Planned
+                    )
+            })
+        })
+        .map(|p| p.session.as_str())
+        .collect();
+
+    // Pass 2 — restart/liveness. With `--repo`, the pattern is the exact scoped
+    // session; otherwise the usual pod pattern.
+    let scoped_session = scope.as_ref().and_then(|s| s.scoped_session.clone());
+    let pattern: Option<&str> = match scoped_session.as_deref() {
+        Some(s) => Some(s),
+        None => pod_pattern(args.pattern.as_deref(), args.all),
+    };
+    let heal: Vec<_> = heal_all(&tmux, pattern, &command, args.dry_run)
+        .await?
+        .into_iter()
+        .filter(|o| !freshly_launched.contains(o.plan.session.as_str()))
+        // When scoped, substring matching is too loose (`conductr-foo` would
+        // also catch `conductr-foo-bar`); require an exact session-name match.
+        .filter(|o| match scoped_session.as_deref() {
+            Some(exact) => o.plan.session == exact,
+            None => true,
+        })
+        .collect();
+
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&outcomes)?);
+        let manifest = serde_json::json!({ "provision": provision, "heal": heal });
+        println!("{}", serde_json::to_string_pretty(&manifest)?);
         return Ok(());
     }
-    if outcomes.is_empty() {
-        println!("no sessions matched (pattern={:?})", pattern.unwrap_or("*"));
+
+    if !provision.is_empty() {
+        println!("provision pass:");
+        setup_spawn::print_report(&provision);
+        println!();
+    }
+
+    println!("restart pass:");
+    if heal.is_empty() {
+        println!("  no sessions matched (pattern={:?})", pattern.unwrap_or("*"));
         return Ok(());
     }
     let mut healed = 0usize;
     let mut skipped = 0usize;
-    for o in &outcomes {
+    for o in &heal {
         match (&o.plan.action, o.executed, o.error.as_deref()) {
             (conductr_pod::heal::HealAction::RestartClaude { command }, true, None) => {
                 healed += 1;
@@ -729,7 +857,7 @@ async fn run_heal(args: HealArgs) -> Result<()> {
             }
         }
     }
-    println!("\n{healed} restarted, {skipped} skipped, {} total", outcomes.len());
+    println!("\n{healed} restarted, {skipped} skipped, {} total", heal.len());
     Ok(())
 }
 
@@ -1183,6 +1311,10 @@ async fn run_setup_spawn(args: SpawnArgs) -> Result<()> {
 
     let reports = setup_spawn::run(&reg, &opts).await?;
     setup_spawn::print_report(&reports);
+
+    if pending_count > 0 && !args.include_pending && opts.tag_filter.is_none() {
+        println!("\n{pending_count} project(s) pending — edit ~/.conductr to promote");
+    }
     Ok(())
 }
 
@@ -2788,6 +2920,74 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use local_detect::{ProbeRow, ProbeStatus};
+
+    const HEAL_REGISTRY: &str = r#"
+[[projects]]
+tag    = "alpha"
+repo   = "owner/alpha"
+path   = "/tmp/alpha"
+status = "active"
+
+[[projects]]
+tag    = "beta"
+repo   = "owner/beta"
+path   = "/tmp/beta"
+status = "pending"
+"#;
+
+    fn write_registry(body: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".conductr"), body).unwrap();
+        dir
+    }
+
+    #[test]
+    fn heal_scope_no_repo_with_registry_provisions_all_active() {
+        let dir = write_registry(HEAL_REGISTRY);
+        let scope = resolve_heal_scope(None, Some(&dir.path().join(".conductr")))
+            .unwrap()
+            .expect("registry present → Some scope");
+        assert!(scope.tag_filter.is_none(), "no --repo → provision all active");
+        assert!(scope.scoped_session.is_none());
+    }
+
+    #[test]
+    fn heal_scope_repo_scopes_to_active_project() {
+        let dir = write_registry(HEAL_REGISTRY);
+        let scope = resolve_heal_scope(Some("owner/alpha"), Some(&dir.path().join(".conductr")))
+            .unwrap()
+            .unwrap();
+        assert_eq!(scope.tag_filter.as_deref(), Some("alpha"));
+        assert_eq!(scope.scoped_session.as_deref(), Some("conductr-alpha"));
+    }
+
+    #[test]
+    fn heal_scope_repo_rejects_pending_project() {
+        let dir = write_registry(HEAL_REGISTRY);
+        let err = resolve_heal_scope(Some("owner/beta"), Some(&dir.path().join(".conductr")))
+            .unwrap_err();
+        assert!(err.to_string().contains("pending"), "{err}");
+    }
+
+    #[test]
+    fn heal_scope_repo_errors_on_unknown_slug() {
+        let dir = write_registry(HEAL_REGISTRY);
+        let err = resolve_heal_scope(Some("owner/ghost"), Some(&dir.path().join(".conductr")))
+            .unwrap_err();
+        assert!(err.to_string().contains("no active project"), "{err}");
+    }
+
+    #[test]
+    fn heal_scope_no_registry_degrades_to_none_without_repo() {
+        let missing = std::path::Path::new("/nonexistent/dir/.conductr");
+        assert!(resolve_heal_scope(None, Some(missing)).unwrap().is_none());
+    }
+
+    #[test]
+    fn heal_scope_repo_without_registry_errors() {
+        let missing = std::path::Path::new("/nonexistent/dir/.conductr");
+        assert!(resolve_heal_scope(Some("owner/alpha"), Some(missing)).is_err());
+    }
 
     /// Every skill with `cli_parity: true` in its SKILL.md frontmatter must
     /// have a matching top-level CLI subcommand.  This test picks up new skills

@@ -120,9 +120,13 @@ pub struct SpawnOptions {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+/// Provision every in-scope project and return one [`ProjectReport`] each.
+///
+/// Pure: prints nothing, so callers control presentation (the `setup spawn`
+/// CLI prints a table; `pod heal --json` serializes the reports). Returns an
+/// error only when an explicit `tag_filter` names a project absent from the
+/// registry — a per-project failure is captured in that project's report.
 pub async fn run(registry: &Registry, opts: &SpawnOptions) -> Result<Vec<ProjectReport>> {
-    let pending_count = registry.pending().count();
-
     let projects: Vec<&RegistryProject> = if let Some(tag) = &opts.tag_filter {
         match registry.find_by_tag(tag) {
             Some(p) => vec![p],
@@ -139,10 +143,6 @@ pub async fn run(registry: &Registry, opts: &SpawnOptions) -> Result<Vec<Project
     let mut reports = Vec::new();
     for project in projects {
         reports.push(provision_project(project, registry, opts).await);
-    }
-
-    if pending_count > 0 && !opts.include_pending && opts.tag_filter.is_none() {
-        println!("\n{pending_count} project(s) pending — edit ~/.conductr to promote");
     }
 
     Ok(reports)
@@ -250,18 +250,20 @@ async fn provision_project(
 
     // Step 4: verify / create the tmux session, and boot Claude into a freshly
     // created one. An *existing* session is never relaunched — that would
-    // disrupt whatever is already running in it.
-    if opts.dry_run {
+    // disrupt whatever is already running in it. The existence check is
+    // read-only, so we run it even in dry-run to report `present` faithfully
+    // (which lets `pod heal` route existing sessions to its restart pass).
+    if check_tmux_session(&session) {
+        steps.push(StepReport::new("session", StepStatus::Present, Some(session.clone())));
+    } else if opts.dry_run {
         steps.push(StepReport::new(
             "session",
             StepStatus::Planned,
-            Some(format!("ensure tmux session '{session}'")),
+            Some(format!("create tmux session '{session}'")),
         ));
         if let Some(cmd) = &opts.launch_command {
             steps.push(StepReport::new("launch", StepStatus::Planned, Some(cmd.clone())));
         }
-    } else if check_tmux_session(&session) {
-        steps.push(StepReport::new("session", StepStatus::Present, Some(session.clone())));
     } else {
         let cwd = path.to_string_lossy().into_owned();
         match create_tmux_session(&session, &cwd) {
