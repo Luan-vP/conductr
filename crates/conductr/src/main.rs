@@ -2648,19 +2648,21 @@ struct ScheduleTestArgs {
 async fn run_sync(args: SyncArgs) -> Result<()> {
     let token = std::env::var("GCAL_OAUTH_TOKEN")
         .with_context(|| "GCAL_OAUTH_TOKEN is not set — obtain a Google OAuth access token")?;
+    let repo_root = args
+        .repo_root
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let cal_cfg = config::read_calendar_section(&repo_root).unwrap_or_default();
     let calendar_id = args
         .calendar_id
         .or_else(|| std::env::var("GCAL_CALENDAR_ID").ok())
+        .or(cal_cfg.calendar_id)
         .unwrap_or_else(|| "primary".to_string());
     let calendar = GcalAdapter::new(token, calendar_id);
 
     match args.cmd {
         None => {
             // Default: full reconcile
-            let repo_root = args
-                .repo_root
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-
             let repo_slug = resolve_sync_repo(args.repo.as_deref(), &repo_root)?;
             let project_tag = config::read_project_tag(&repo_root)?;
 

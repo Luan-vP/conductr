@@ -15,8 +15,13 @@ Reconcile the conductr calendar: place `[conductr:*]` events into Google Calenda
 
 ## Prerequisites
 
-- `mcp__claude_ai_Google_Calendar__*` tools available in the current session.
-- A Google Calendar accessible to the MCP connection.
+- Google Calendar MCP tools available in the current session. The tool prefix
+  varies by server version (e.g. `mcp__e182bec4-3b31-4422-aed8-27fa867a8de5__`
+  or `mcp__claude_ai_Google_Calendar__`). Discover the active prefix from the
+  tools listed in your session; the operation names are stable: `list_events`,
+  `create_event`, `update_event`, `delete_event`.
+- Calendar target: read `calendar_id` from `.conductr [calendar]`; fall back to
+  the user's primary calendar if absent.
 - Events follow the title grammar in `docs/calendar.md`.
 
 If the Google Calendar MCP tools are not available, report this to the user and skip — do not attempt to simulate or stub the sync.
@@ -66,7 +71,7 @@ Sort open `human`-labeled issues by priority (descending). For each issue in pri
 2. If a slot exists but the window it occupied is gone or blocked, **delete the stale event** and re-schedule.
 3. If no slot exists, **create** a new event in the earliest available 30-minute slot.
 
-Event creation (`mcp__claude_ai_Google_Calendar__create-event`):
+Event creation (Google Calendar MCP `create_event`):
 - **Title**: `[conductr:<tag>] decision: <issue-title>` (omit tag prefix if the issue has no tag)
 - **Duration**: 30 minutes
 - **Description** (preserve these two lines across all future edits):
@@ -97,7 +102,7 @@ Manually place a single test slot in the next eligible window.
 1. Read `$ARGUMENTS` for an optional tag and subject. If none provided, prompt the user.
 2. Fetch windows and compute eligible slots as in Steps 1 and 3 above.
 3. Find the earliest available 30-minute slot across all eligible windows.
-4. Create the event (`mcp__claude_ai_Google_Calendar__create-event`):
+4. Create the event (Google Calendar MCP `create_event`):
    - **Title**: `[conductr:<tag>] test: <subject>` (use `*` if no tag given)
    - **Duration**: 30 minutes
    - **Description**:
@@ -117,14 +122,18 @@ See `docs/calendar.md` § Lifecycle for the full contract. Summary:
 
 ## MCP tools used
 
-| Purpose | Tool |
-|---------|------|
-| List calendar events | `mcp__claude_ai_Google_Calendar__list-events` |
-| Create an event | `mcp__claude_ai_Google_Calendar__create-event` |
-| Update an event | `mcp__claude_ai_Google_Calendar__update-event` |
-| Delete an event | `mcp__claude_ai_Google_Calendar__delete-event` |
+| Purpose | Operation name |
+|---------|----------------|
+| List calendar events | `list_events` |
+| Create an event | `create_event` |
+| Update an event | `update_event` |
+| Delete an event | `delete_event` |
 
-Exact tool names may vary by MCP server version. Use whatever `mcp__claude_ai_Google_Calendar__*` tools are available; if a specific tool is missing, report to the user and skip that operation rather than erroring out.
+The MCP server prefix varies by session (e.g. `mcp__e182bec4-3b31-4422-aed8-27fa867a8de5__`
+or `mcp__claude_ai_Google_Calendar__`). Discover the active prefix from the
+Google Calendar tools listed in your session and combine it with the operation
+names above. If a specific operation is missing, report to the user and skip
+that step rather than erroring out.
 
 ## Non-goals (bootstrap phase)
 

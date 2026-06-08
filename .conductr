@@ -41,6 +41,13 @@ idle        = "17 * * * *"
 provider = "ollama"
 # model = "qwen3:27b"   # ollama only; omit to use the default (qwen3:27b)
 
+[calendar]
+# Google Calendar target for `conductr sync`.
+# calendar_id: the calendar to read windows from and write scheduled items to.
+# time_zone:   IANA timezone for event display (UTC internally).
+calendar_id = "luanvanpletsen@gmail.com"
+time_zone   = "Europe/London"
+
 [idle]
 # State written by `conductr idle` after each pass.
 # last_module: the use-case crate scanned most recently (empty = not yet run).
