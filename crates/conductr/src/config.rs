@@ -167,6 +167,17 @@ impl Default for OrchestrateSection {
     }
 }
 
+// ── [calendar] ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, Default)]
+pub struct CalendarSection {
+    /// Google Calendar ID (e.g. `luanvanpletsen@gmail.com` or `primary`).
+    pub calendar_id: Option<String>,
+    /// IANA timezone for event display (e.g. `Europe/London`). Times are stored
+    /// as UTC internally; this is passed to the Google Calendar API for display.
+    pub time_zone: Option<String>,
+}
+
 // ── RawConfig ─────────────────────────────────────────────────────────────────
 
 
@@ -219,12 +230,20 @@ struct RawConfig {
     pub architecture: ArchitectureSection,
     #[serde(default)]
     pub idle: IdleSection,
+    #[serde(default)]
+    pub calendar: CalendarSection,
 }
 
 /// Read `project_tag` from `.conductr` in `repo_path`.
 /// Returns `None` when the file or field is absent.
 pub fn read_project_tag(repo_path: &Path) -> Result<Option<String>> {
     read_raw(repo_path).map(|c| c.project_tag)
+}
+
+/// Read the `[calendar]` section from `.conductr` in `repo_path`.
+/// Returns defaults (all `None`) when the file or section is absent.
+pub fn read_calendar_section(repo_path: &Path) -> Result<CalendarSection> {
+    read_raw(repo_path).map(|c| c.calendar)
 }
 
 /// Validate that `tag` contains only `[a-z0-9-]` and is non-empty.
@@ -864,5 +883,27 @@ last_run    = "2026-05-11T08:00:00Z"
         assert!(out.contains("[cadence]"));
         assert!(out.contains("[band]"));
         assert!(out.contains("last_module = \"conductr-mail\""));
+    }
+
+    // ── [calendar] ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parses_calendar_section() {
+        let raw = r#"
+[calendar]
+calendar_id = "user@gmail.com"
+time_zone   = "Europe/London"
+"#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.calendar.calendar_id.as_deref(), Some("user@gmail.com"));
+        assert_eq!(cfg.calendar.time_zone.as_deref(), Some("Europe/London"));
+    }
+
+    #[test]
+    fn calendar_section_defaults_when_absent() {
+        let raw = r#"project_tag = "test""#;
+        let cfg: RawConfig = toml::from_str(raw).unwrap();
+        assert!(cfg.calendar.calendar_id.is_none());
+        assert!(cfg.calendar.time_zone.is_none());
     }
 }

@@ -14,10 +14,11 @@ use conductr_core::ports::{
     CalendarError, CalendarPort, InstanceError, InstanceProvider, IssueTracker, IssueTrackerError,
     LocalAgent, LocalAgentError, Mailbox, MailboxError, ScmHost, TmuxAgent, TmuxError,
 };
+use conductr_core::signals::{MailKind, MailMessage, MailRef};
 use conductr_core::types::{
     CalendarEvent, CiStatus, ClosedPr, InstanceHandle, InstanceSpec, Issue, IssueNumber,
-    IssueState, MailKind, MailMessage, MailRef, NewCalendarEvent, Pr, PrNumber, PrState, Provider,
-    RepoSlug, Task, TaskStatus, TmuxSession, UpdateCalendarEvent,
+    IssueState, NewCalendarEvent, Pr, PrNumber, PrState, Provider, RepoSlug, Task, TaskStatus,
+    TmuxSession, UpdateCalendarEvent,
 };
 
 // ── MockTmuxAgent ─────────────────────────────────────────────────────────────

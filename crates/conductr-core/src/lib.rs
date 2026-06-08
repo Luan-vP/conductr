@@ -1,6 +1,7 @@
 pub mod maturity;
 pub mod ports;
 pub mod safety;
+pub mod signals;
 pub mod types;
 
 pub use maturity::{MaturityCheck, MaturityCheckResult, MaturityLevel, MaturityReport};

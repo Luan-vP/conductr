@@ -6,7 +6,8 @@
 
 use std::time::Instant;
 
-use conductr_core::types::{CiStatus, IssueNumber, MailKind, Pr, SafetyPreset, SiblingStatus};
+use conductr_core::signals::MailKind;
+use conductr_core::types::{CiStatus, IssueNumber, Pr, SafetyPreset, SiblingStatus};
 
 /// Decision returned by [`decide`] for each Ready issue.
 #[derive(Debug)]

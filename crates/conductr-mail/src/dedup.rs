@@ -2,7 +2,8 @@
 //! overlap with a candidate set of files for a given issue.
 
 use conductr_core::ports::Mailbox;
-use conductr_core::types::{IssueNumber, MailKind, MailRef};
+use conductr_core::signals::{MailKind, MailRef};
+use conductr_core::types::IssueNumber;
 
 /// Outcome of a scope-dedup check.
 #[derive(Debug, Clone, PartialEq, Eq)]

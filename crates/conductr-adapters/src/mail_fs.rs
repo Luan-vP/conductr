@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use conductr_core::ports::{Mailbox, MailboxError};
-use conductr_core::types::{MailKind, MailMessage, MailRef};
+use conductr_core::signals::{MailKind, MailMessage, MailRef};
 
 #[derive(Debug)]
 pub struct FsMailbox {

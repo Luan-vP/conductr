@@ -5,10 +5,10 @@ use chrono::{DateTime, Utc};
 
 pub use crate::types::{InstanceError, LocalAgentError, TmuxError};
 
+use crate::signals::{MailKind, MailMessage, MailRef};
 use crate::types::{
     CalendarEvent, ClosedPr, InstanceHandle, InstanceSpec, Issue, IssueNumber, LocalCiReport,
-    MailKind, MailMessage, MailRef, NewCalendarEvent, Pr, PrNumber, RepoSlug, Task, TmuxSession,
-    UpdateCalendarEvent,
+    NewCalendarEvent, Pr, PrNumber, RepoSlug, Task, TmuxSession, UpdateCalendarEvent,
 };
 
 // ── IssueTracker ──────────────────────────────────────────────────────────────

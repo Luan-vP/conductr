@@ -15,9 +15,9 @@ use crate::types::IssueNumber;
 use conductr_core::maturity::MaturityLevel;
 use conductr_core::ports::{LocalCi, Mailbox, ScmHost, TmuxAgent};
 use conductr_core::safety::{preset_from_labels, resolve_preset};
+use conductr_core::signals::MailKind;
 use conductr_core::types::{
-    CiMode, CiRunRow, CiStatus, MailKind, PrLocalCiResult, PrState,
-    SafetyPreset, TempoPrRow, TmuxSession,
+    CiMode, CiRunRow, CiStatus, PrLocalCiResult, PrState, SafetyPreset, TempoPrRow, TmuxSession,
 };
 
 pub use conductr_core::types::{CycleReport, OrchestratorConfig};
@@ -672,9 +672,8 @@ fn resolve_ci_mode(mode: CiMode, local: CiStatus, github: CiStatus) -> CiStatus 
 mod tests {
     use super::*;
     use conductr_adapters::mock::MockScmHost;
-    use conductr_core::types::{
-        CiStatus, Issue, IssueState, MailKind, MailMessage, MailRef, Pr, PrState, RepoSlug,
-    };
+    use conductr_core::signals::{MailKind, MailMessage, MailRef};
+    use conductr_core::types::{CiStatus, Issue, IssueState, Pr, PrState, RepoSlug};
     use conductr_core::ports::{Mailbox, MailboxError};
     use async_trait::async_trait;
     use chrono::Utc;
