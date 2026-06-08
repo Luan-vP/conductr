@@ -12,7 +12,7 @@ use tokio::process::Command;
 use std::process::Stdio;
 
 use conductr_core::ports::{Mailbox, MailboxError};
-use conductr_core::types::{MailKind, MailMessage, MailRef};
+use conductr_core::signals::{MailKind, MailMessage, MailRef};
 
 /// Mailbox backed by comments on a GitHub sentinel issue.
 #[derive(Debug)]

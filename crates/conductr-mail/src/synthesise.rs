@@ -2,7 +2,8 @@
 //! its id so a downstream agent can pick it up and produce a `SynthesisProposal`.
 
 use conductr_core::ports::{Mailbox, MailboxError};
-use conductr_core::types::{IssueNumber, MailKind, MailRef};
+use conductr_core::signals::{MailKind, MailRef};
+use conductr_core::types::IssueNumber;
 
 /// Post a `SynthesisRequest` for `issue` covering `pr_numbers`.
 ///
