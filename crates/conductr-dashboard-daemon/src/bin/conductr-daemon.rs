@@ -13,6 +13,10 @@ struct Args {
     /// State refresh interval in seconds.
     #[arg(long, default_value = "30")]
     poll_secs: u64,
+
+    /// Serve the web dashboard on this TCP port (e.g. --web-port 7777).
+    #[arg(long)]
+    web_port: Option<u16>,
 }
 
 #[tokio::main]
@@ -27,8 +31,11 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let socket = args.socket.unwrap_or_else(Daemon::default_socket_path);
-    let daemon = Daemon::new(socket)
+    let mut daemon = Daemon::new(socket)
         .with_poll_interval(std::time::Duration::from_secs(args.poll_secs));
+    if let Some(port) = args.web_port {
+        daemon = daemon.with_web_port(port);
+    }
 
     daemon.run().await
 }

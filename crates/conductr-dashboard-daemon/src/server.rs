@@ -27,15 +27,22 @@ pub const IMPL_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct Daemon {
     socket_path: PathBuf,
     poll_interval: Duration,
+    web_port: Option<u16>,
 }
 
 impl Daemon {
     pub fn new(socket_path: impl Into<PathBuf>) -> Self {
-        Self { socket_path: socket_path.into(), poll_interval: Duration::from_secs(30) }
+        Self { socket_path: socket_path.into(), poll_interval: Duration::from_secs(30), web_port: None }
     }
 
     pub fn with_poll_interval(mut self, d: Duration) -> Self {
         self.poll_interval = d;
+        self
+    }
+
+    /// Also serve the web dashboard on a TCP port (e.g. 7777).
+    pub fn with_web_port(mut self, port: u16) -> Self {
+        self.web_port = Some(port);
         self
     }
 
@@ -67,6 +74,17 @@ impl Daemon {
         tokio::spawn(async move {
             aggregators::run_all(state_agg, tx_agg, interval).await;
         });
+
+        // Optionally serve the web dashboard over TCP
+        if let Some(port) = self.web_port {
+            let state2 = state.clone();
+            let tx2 = tx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = run_web_server(port, state2, tx2).await {
+                    tracing::error!("web server error: {e:#}");
+                }
+            });
+        }
 
         loop {
             let (stream, _addr) = listener.accept().await?;
@@ -380,4 +398,62 @@ impl PipeOr for String {
     fn pipe_or(self, f: impl FnOnce() -> Self) -> Self {
         if self.is_empty() { f() } else { self }
     }
+}
+
+// ── Web / TCP server ──────────────────────────────────────────────────────────
+
+static DASHBOARD_HTML: &[u8] = include_bytes!("dashboard/index.html");
+
+async fn run_web_server(
+    port: u16,
+    state: SharedState,
+    tx: broadcast::Sender<SseEvent>,
+) -> Result<()> {
+    use tokio::net::TcpListener;
+    let listener = TcpListener::bind(("0.0.0.0", port)).await?;
+    info!("web dashboard → http://127.0.0.1:{port}/");
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let state = state.clone();
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle_web_conn(stream, state, tx).await {
+                debug!("web connection error: {e:#}");
+            }
+        });
+    }
+}
+
+async fn handle_web_conn(
+    stream: tokio::net::TcpStream,
+    state: SharedState,
+    tx: broadcast::Sender<SseEvent>,
+) -> Result<()> {
+    let (r, mut w) = stream.into_split();
+    let mut rdr = BufReader::new(r);
+    let req = read_request(&mut rdr).await?;
+    debug!("[web] {} {}", req.method, req.path);
+
+    if req.method != "GET" {
+        let body = br#"{"error":{"code":"INVALID_QUERY","message":"only GET is supported","retryable":false}}"#;
+        write_json_response(&mut w, 405, body).await?;
+        return Ok(());
+    }
+
+    if req.path == "/" || req.path == "/index.html" {
+        let header = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: text/html; charset=utf-8\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\
+             \r\n",
+            DASHBOARD_HTML.len()
+        );
+        w.write_all(header.as_bytes()).await?;
+        w.write_all(DASHBOARD_HTML).await?;
+        w.flush().await?;
+        return Ok(());
+    }
+
+    route(req.path, state, tx, &mut w).await
 }
