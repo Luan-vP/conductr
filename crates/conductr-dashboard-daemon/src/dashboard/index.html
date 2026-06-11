@@ -213,6 +213,68 @@ body {
 
 /* ── animations ──────────────────────────────────────────────────── */
 @keyframes pulse { from { opacity: .5 } to { opacity: 1 } }
+
+/* ── settings sliders ────────────────────────────────────────────── */
+.settings-block {
+  margin: 4px 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.slider-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.slider-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+}
+.slider-key  { opacity: .6; letter-spacing: 1px; }
+.slider-val  { font-size: 13px; }
+.slider-desc { font-size: 10px; opacity: .4; margin-top: 1px; }
+
+input[type=range].conductr-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 3px;
+  background: var(--dim);
+  outline: none;
+  border-radius: 0;
+  cursor: pointer;
+}
+input[type=range].conductr-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 11px; height: 11px;
+  background: var(--clr);
+  border-radius: 50%;
+  box-shadow: 0 0 5px var(--clr);
+}
+input[type=range].conductr-slider::-moz-range-thumb {
+  width: 11px; height: 11px;
+  background: var(--clr);
+  border: none;
+  border-radius: 50%;
+  box-shadow: 0 0 5px var(--clr);
+}
+.slider-ticks {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  opacity: .35;
+  letter-spacing: .5px;
+  padding: 0 1px;
+}
+.card-settings {
+  display: flex;
+  gap: 16px;
+  font-size: 10px;
+  opacity: .55;
+  margin-top: 3px;
+}
 </style>
 </head>
 <body>
@@ -376,6 +438,10 @@ function renderOverview() {
     ${findings.length > 0 ? `<span>▲ ${findings.length} finding${findings.length!==1?'s':''}</span>` : ''}
     ${crons ? `<span>${esc(crons)}</span>` : ''}
   </div>
+  <div class="card-settings">
+    ${r.safety_preset ? `<span>safety: ${esc(r.safety_preset)}</span>` : ''}
+    ${r.max_parallel_beats != null ? `<span>beats: ${r.max_parallel_beats}</span>` : ''}
+  </div>
 </div>`;
   }).join('');
 
@@ -405,6 +471,9 @@ function renderDetail(slug) {
   el.innerHTML = `
 <div class="detail-title">${esc(slug)}</div>
 <div class="detail-sub">${r ? esc((r.maturity||'')+(r.local_path?' · '+r.local_path:'')) : ''}</div>
+
+<div class="sec">settings</div><hr class="rule">
+${renderSettings(slug, r)}
 
 <div class="sec">cadence</div><hr class="rule">
 <div class="staff-wrap" id="cadence-wrap" style="min-height:${cadenceHeight(0)}px">
@@ -673,6 +742,109 @@ function getNotePosX(svg, count) {
 }
 
 // ── HTML section renderers ────────────────────────────────────────────────────
+// ── Settings sliders ──────────────────────────────────────────────────────────
+
+const SAFETY_LEVELS = ['UNHINGED', 'FERAL', 'FAST', 'STRICT', 'BUREAUCRATIC'];
+const SAFETY_DESC = {
+  UNHINGED:     'solo branch — siblings not fetched',
+  FERAL:        'solo branch — conflict yells, no block',
+  FAST:         'sibling-aware — advisory comment only',
+  STRICT:       'soft-chord — awaits green siblings',
+  BUREAUCRATIC: 'hard-chord — serialised coordinator lock',
+};
+
+function renderSettings(slug, r) {
+  const safetyIdx = r && r.safety_preset ? SAFETY_LEVELS.indexOf(r.safety_preset) : -1;
+  const beats     = r && r.max_parallel_beats != null ? r.max_parallel_beats : null;
+  const safeid    = slug.replace(/\//g, '-').replace(/[^a-z0-9-]/gi, '');
+
+  const safetyVal  = safetyIdx >= 0 ? SAFETY_LEVELS[safetyIdx] : '(from maturity)';
+  const safetySliderVal = safetyIdx >= 0 ? safetyIdx : '';
+  const beatsVal   = beats != null ? beats : '(default)';
+
+  return `
+<div class="settings-block">
+  <div class="slider-row">
+    <div class="slider-label-row">
+      <span class="slider-key">SAFETY LEVEL</span>
+      <span class="slider-val" id="safety-val-${safeid}">${esc(safetyVal)}</span>
+    </div>
+    <input type="range" class="conductr-slider" id="safety-slider-${safeid}"
+      min="0" max="4" step="1"
+      value="${safetyIdx >= 0 ? safetyIdx : 1}"
+      oninput="onSafetySlider('${slug}', '${safeid}', this.value)"
+      onchange="saveSafety('${slug}', '${safeid}', this.value)">
+    <div class="slider-ticks">
+      ${SAFETY_LEVELS.map(l => `<span>${l.charAt(0)+l.slice(1).toLowerCase()}</span>`).join('')}
+    </div>
+    <div class="slider-desc" id="safety-desc-${safeid}">${esc(SAFETY_DESC[SAFETY_LEVELS[Math.max(0, safetyIdx)]] || '')}</div>
+  </div>
+
+  <div class="slider-row">
+    <div class="slider-label-row">
+      <span class="slider-key">PARALLEL BEATS</span>
+      <span class="slider-val" id="beats-val-${safeid}">${esc(String(beatsVal))}</span>
+    </div>
+    <input type="range" class="conductr-slider" id="beats-slider-${safeid}"
+      min="1" max="8" step="1"
+      value="${beats != null ? beats : 3}"
+      oninput="onBeatsSlider('${safeid}', this.value)"
+      onchange="saveBeats('${slug}', '${safeid}', this.value)">
+    <div class="slider-ticks">
+      ${[1,2,3,4,5,6,7,8].map(n => `<span>${n}</span>`).join('')}
+    </div>
+    <div class="slider-desc">max simultaneous orchestrate beats (chord size cap)</div>
+  </div>
+</div>`;
+}
+
+function onSafetySlider(slug, safeid, idx) {
+  const level = SAFETY_LEVELS[idx];
+  document.getElementById(`safety-val-${safeid}`).textContent = level.charAt(0)+level.slice(1).toLowerCase();
+  document.getElementById(`safety-desc-${safeid}`).textContent = SAFETY_DESC[level] || '';
+}
+
+function onBeatsSlider(safeid, val) {
+  document.getElementById(`beats-val-${safeid}`).textContent = val;
+}
+
+async function saveSafety(slug, safeid, idx) {
+  const level = SAFETY_LEVELS[idx];
+  document.getElementById(`safety-val-${safeid}`).textContent = '…';
+  try {
+    await putConfig(slug, { safety_preset: level });
+    document.getElementById(`safety-val-${safeid}`).textContent = level.charAt(0)+level.slice(1).toLowerCase();
+    // Refresh state so overview cards update
+    await connect();
+  } catch(e) {
+    document.getElementById(`safety-val-${safeid}`).textContent = 'error';
+  }
+}
+
+async function saveBeats(slug, safeid, val) {
+  document.getElementById(`beats-val-${safeid}`).textContent = '…';
+  try {
+    await putConfig(slug, { max_parallel_beats: parseInt(val, 10) });
+    document.getElementById(`beats-val-${safeid}`).textContent = val;
+    await connect();
+  } catch(e) {
+    document.getElementById(`beats-val-${safeid}`).textContent = 'error';
+  }
+}
+
+async function putConfig(slug, patch) {
+  const res = await fetch(`/repos/${slug}/config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error?.message || res.status);
+  }
+  return res.json();
+}
+
 function renderBeatTable(beats) {
   if (!beats || !beats.length) return '<div class="empty">no beats</div>';
   const rows = beats.map(b => `

@@ -2,8 +2,8 @@
 //!
 //! Uses a minimal hand-rolled HTTP/1.1 parser over tokio `UnixStream`s to
 //! avoid pulling in axum/warp as a dependency. The API is simple enough
-//! (GET-only, no request bodies, fixed paths) that a full framework would be
-//! over-engineering.
+//! (GET-only on Unix socket; GET + PUT on the web TCP port) that a full
+//! framework would be over-engineering.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -12,7 +12,7 @@ use anyhow::Result;
 use chrono::Utc;
 use conductr_core::types::RepoSlug;
 use conductr_dashboard_core::SseEvent;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
@@ -106,9 +106,10 @@ fn dirs_home() -> PathBuf {
 struct Request {
     method: String,
     path: String,
+    body: Vec<u8>,
 }
 
-async fn read_request<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<Request> {
+async fn read_request<R: AsyncBufReadExt + AsyncReadExt + Unpin>(reader: &mut R) -> Result<Request> {
     let mut request_line = String::new();
     reader.read_line(&mut request_line).await?;
     let parts: Vec<&str> = request_line.trim().splitn(3, ' ').collect();
@@ -118,15 +119,26 @@ async fn read_request<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<Requ
     let method = parts[0].to_string();
     let path = parts[1].split('?').next().unwrap_or(parts[1]).to_string();
 
-    // Drain headers
+    // Read headers; capture Content-Length for requests that carry a body
+    let mut content_length = 0usize;
     loop {
         let mut header = String::new();
         reader.read_line(&mut header).await?;
         if header.trim().is_empty() {
             break;
         }
+        let lower = header.to_ascii_lowercase();
+        if let Some(v) = lower.strip_prefix("content-length:") {
+            content_length = v.trim().parse().unwrap_or(0);
+        }
     }
-    Ok(Request { method, path })
+
+    let mut body = vec![0u8; content_length.min(1_048_576)];
+    if content_length > 0 {
+        reader.read_exact(&mut body).await?;
+    }
+
+    Ok(Request { method, path, body })
 }
 
 async fn handle_connection(
@@ -400,6 +412,78 @@ impl PipeOr for String {
     }
 }
 
+// ── Config write (PUT /repos/{slug}/config) ───────────────────────────────────
+
+async fn handle_put_config(
+    path: &str,
+    body: &[u8],
+    state: SharedState,
+    w: &mut (impl AsyncWriteExt + Unpin),
+) -> Result<()> {
+    // Parse /repos/{owner}/{repo}/config
+    let tail = path
+        .strip_prefix("/repos/")
+        .and_then(|s| s.strip_suffix("/config"))
+        .unwrap_or("");
+    let parts: Vec<&str> = tail.splitn(2, '/').collect();
+    if parts.len() < 2 {
+        let body = br#"{"error":{"code":"NOT_FOUND","message":"bad config path","retryable":false}}"#;
+        return write_json_response(w, 404, body).await;
+    }
+    let slug = RepoSlug::new(parts[0], parts[1]);
+
+    // Find local path for this repo
+    let local_path = state
+        .read()
+        .await
+        .repos
+        .iter()
+        .find(|r| r.slug == slug)
+        .map(|r| r.local_path.clone());
+
+    let Some(local_path) = local_path else {
+        let msg = format!(
+            r#"{{"error":{{"code":"NOT_FOUND","message":"no repo {}/{}","retryable":false}}}}"#,
+            parts[0], parts[1]
+        );
+        return write_json_response(w, 404, msg.as_bytes()).await;
+    };
+
+    // Parse JSON body: { safety_preset?: string, max_parallel_beats?: number }
+    #[derive(serde::Deserialize)]
+    struct ConfigPatch {
+        safety_preset: Option<String>,
+        max_parallel_beats: Option<u32>,
+    }
+    let patch: ConfigPatch = match serde_json::from_slice(body) {
+        Ok(p) => p,
+        Err(e) => {
+            let msg =
+                format!(r#"{{"error":{{"code":"INVALID_QUERY","message":"{e}","retryable":false}}}}"#);
+            return write_json_response(w, 400, msg.as_bytes()).await;
+        }
+    };
+
+    let config_path = format!("{local_path}/.conductr");
+    let existing = tokio::fs::read_to_string(&config_path).await.unwrap_or_default();
+    let updated = crate::aggregators::repos::patch_conductr_file(
+        &existing,
+        patch.safety_preset.as_deref(),
+        patch.max_parallel_beats,
+    );
+    if let Err(e) = tokio::fs::write(&config_path, updated.as_bytes()).await {
+        let msg = format!(r#"{{"error":{{"code":"INTERNAL","message":"{e}","retryable":false}}}}"#);
+        return write_json_response(w, 500, msg.as_bytes()).await;
+    }
+
+    // Trigger immediate re-read so the next /state response reflects the change
+    let _ = crate::aggregators::repos::ReposAggregator::new()
+        .refresh_blocking(&state)
+        .await;
+
+    write_envelope(w, serde_json::json!({"ok": true})).await
+}
+
 // ── Web / TCP server ──────────────────────────────────────────────────────────
 
 static DASHBOARD_HTML: &[u8] = include_bytes!("dashboard/index.html");
@@ -434,8 +518,18 @@ async fn handle_web_conn(
     let req = read_request(&mut rdr).await?;
     debug!("[web] {} {}", req.method, req.path);
 
+    // PUT /repos/{owner}/{repo}/config — dashboard-local write for sliders
+    if req.method == "PUT" {
+        if req.path.starts_with("/repos/") && req.path.ends_with("/config") {
+            return handle_put_config(&req.path, &req.body, state, &mut w).await;
+        }
+        let body = br#"{"error":{"code":"INVALID_QUERY","message":"PUT only supported on /repos/{slug}/config","retryable":false}}"#;
+        write_json_response(&mut w, 405, body).await?;
+        return Ok(());
+    }
+
     if req.method != "GET" {
-        let body = br#"{"error":{"code":"INVALID_QUERY","message":"only GET is supported","retryable":false}}"#;
+        let body = br#"{"error":{"code":"INVALID_QUERY","message":"only GET and PUT are supported","retryable":false}}"#;
         write_json_response(&mut w, 405, body).await?;
         return Ok(());
     }

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub use conductr_core::maturity::MaturityLevel;
 pub use conductr_core::types::{
     CiRunRow, CiStatus, ClosedPr, Diagnosis, Finding, FindingSeverity, Pr, PrState, RepoSlug,
+    SafetyPreset,
 };
 
 // ── §4.1 Repo / project registry ─────────────────────────────────────────────
@@ -26,6 +27,11 @@ pub struct RepoEntry {
     pub status: RepoStatus,
     pub cadence: HashMap<String, String>,
     pub maturity: Option<MaturityLevel>,
+    /// Safety preset override from the repo's `.conductr` `[orchestrate]` section.
+    /// `None` means the effective preset is derived from `maturity`.
+    pub safety_preset: Option<SafetyPreset>,
+    /// Chord size cap from the repo's `.conductr` `[orchestrate].max_parallel_beats`.
+    pub max_parallel_beats: Option<u32>,
 }
 
 // ── §4.2 Orchestrate cycles ───────────────────────────────────────────────────
