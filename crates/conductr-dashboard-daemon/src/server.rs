@@ -12,7 +12,7 @@ use anyhow::Result;
 use chrono::Utc;
 use conductr_core::types::RepoSlug;
 use conductr_dashboard_core::SseEvent;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
@@ -22,6 +22,10 @@ use crate::sse::format_sse_frame;
 use crate::state::{new_state, SharedState};
 
 pub const IMPL_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+const MAX_LINE_LEN: usize = 8 * 1024; // 8 KiB per line (request-line or header, including CRLF)
+const MAX_HEADERS: usize = 100;
+const PARSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The daemon handle. Call [`Daemon::run`] to start serving.
 pub struct Daemon {
@@ -92,7 +96,10 @@ struct Request {
 
 async fn read_request<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<Request> {
     let mut request_line = String::new();
-    reader.read_line(&mut request_line).await?;
+    reader.take((MAX_LINE_LEN + 1) as u64).read_line(&mut request_line).await?;
+    if request_line.len() > MAX_LINE_LEN {
+        anyhow::bail!("request line too long");
+    }
     let parts: Vec<&str> = request_line.trim().splitn(3, ' ').collect();
     if parts.len() < 2 {
         anyhow::bail!("malformed request line");
@@ -100,12 +107,20 @@ async fn read_request<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<Requ
     let method = parts[0].to_string();
     let path = parts[1].split('?').next().unwrap_or(parts[1]).to_string();
 
-    // Drain headers
+    // Drain headers with per-line and count limits
+    let mut header_count = 0usize;
     loop {
         let mut header = String::new();
-        reader.read_line(&mut header).await?;
+        reader.take((MAX_LINE_LEN + 1) as u64).read_line(&mut header).await?;
+        if header.len() > MAX_LINE_LEN {
+            anyhow::bail!("header too long");
+        }
         if header.trim().is_empty() {
             break;
+        }
+        header_count += 1;
+        if header_count > MAX_HEADERS {
+            anyhow::bail!("too many headers");
         }
     }
     Ok(Request { method, path })
@@ -119,7 +134,19 @@ async fn handle_connection(
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
 
-    let req = read_request(&mut reader).await?;
+    let req = match tokio::time::timeout(PARSE_TIMEOUT, read_request(&mut reader)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            warn!("bad request: {e}");
+            let body = br#"{"error":{"code":"BAD_REQUEST","message":"malformed or oversized request","retryable":false}}"#;
+            let _ = write_json_response(&mut write_half, 400, body).await;
+            return Ok(());
+        }
+        Err(_) => {
+            warn!("request parse timed out");
+            return Ok(());
+        }
+    };
     debug!("{} {}", req.method, req.path);
 
     if req.method != "GET" {
