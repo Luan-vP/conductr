@@ -709,6 +709,7 @@ pub fn make_pr(number: PrNumber, title: &str, head_ref: &str) -> Pr {
         state: PrState::Open,
         ci: CiStatus::Unknown,
         linked_issue: None,
+        is_fork: false,
     }
 }
 

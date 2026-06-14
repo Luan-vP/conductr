@@ -152,6 +152,7 @@ mod tests {
             state: PrState::Open,
             ci,
             linked_issue: None,
+            is_fork: false,
         }
     }
 
