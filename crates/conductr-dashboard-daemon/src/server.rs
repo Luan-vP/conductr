@@ -6,10 +6,12 @@
 //! over-engineering.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use chrono::Utc;
+use conductr_adapters::{crontab::Crontab, tmux::Tmux};
 use conductr_core::types::RepoSlug;
 use conductr_dashboard_core::SseEvent;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -60,12 +62,16 @@ impl Daemon {
         let state = new_state();
         let (tx, _) = broadcast::channel::<SseEvent>(128);
 
+        // Construct concrete adapters at the composition root
+        let tmux = Arc::new(Tmux::new());
+        let crontab = Arc::new(Crontab::new());
+
         // Spawn the aggregator poll loop (tokio interval fires immediately on first tick)
         let state_agg = state.clone();
         let tx_agg = tx.clone();
         let interval = self.poll_interval;
         tokio::spawn(async move {
-            aggregators::run_all(state_agg, tx_agg, interval).await;
+            aggregators::run_all(state_agg, tx_agg, interval, tmux, crontab).await;
         });
 
         loop {

@@ -1,19 +1,24 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
+use conductr_core::ports::{CrontabAgent, CrontabError};
 use conductr_dashboard_core::{model::CronEntry, SseEvent};
 use tokio::sync::broadcast;
 
-use crate::state::SharedState;
 use super::Aggregator;
+use crate::state::SharedState;
 
 /// Reads the user's crontab and extracts entries tagged with
 /// `# conductr-cron:` markers.
-pub struct CronAggregator;
+pub struct CronAggregator {
+    crontab: Arc<dyn CrontabAgent>,
+}
 
 impl CronAggregator {
-    pub fn new() -> Self {
-        Self
+    pub fn new(crontab: Arc<dyn CrontabAgent>) -> Self {
+        Self { crontab }
     }
 }
 
@@ -24,33 +29,14 @@ impl Aggregator for CronAggregator {
         state: &SharedState,
         _tx: &broadcast::Sender<SseEvent>,
     ) -> Result<()> {
-        let entries = read_crontab().await.unwrap_or_default();
+        let entries = match self.crontab.list().await {
+            Ok(text) => parse_crontab(&text),
+            Err(CrontabError::NoCrontab) | Err(CrontabError::NotInstalled) => Vec::new(),
+            Err(e) => return Err(e.into()),
+        };
         state.write().await.cron = entries;
         Ok(())
     }
-}
-
-async fn read_crontab() -> Result<Vec<CronEntry>> {
-    let out = tokio::process::Command::new("crontab")
-        .arg("-l")
-        .output()
-        .await;
-
-    let out = match out {
-        Ok(o) if o.status.success() => o,
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            if stderr.contains("no crontab") {
-                return Ok(Vec::new());
-            }
-            anyhow::bail!("crontab -l failed: {}", stderr);
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e.into()),
-    };
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    Ok(parse_crontab(&stdout))
 }
 
 fn parse_crontab(text: &str) -> Vec<CronEntry> {

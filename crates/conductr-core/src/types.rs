@@ -93,6 +93,16 @@ pub enum TmuxError {
     Parse(String),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum CrontabError {
+    #[error("`crontab` not found on PATH")]
+    NotInstalled,
+    #[error("no crontab for this user")]
+    NoCrontab,
+    #[error("io: {0}")]
+    Io(String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Health {
