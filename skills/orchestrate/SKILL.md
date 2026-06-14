@@ -1,6 +1,7 @@
 ---
 name: orchestrate
 description: Manage GitHub issue implementation by delegating to the Claude GitHub Action bot. When called with no arguments, automatically finds unblocked issues, triggers them in parallel, reviews and merges blocking PRs, and repeats until all issues are done. When called with issue numbers or a label, processes that specific batch. Respects dependency ordering throughout.
+cli: conductr orchestrate [<issues>... | --label <label>] [--no-architect]
 ---
 
 # Orchestrate Issue Implementation

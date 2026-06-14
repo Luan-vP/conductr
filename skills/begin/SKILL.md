@@ -1,6 +1,7 @@
 ---
 name: begin
 description: Cadence configurator — write default cadence entries or add a skill to .conductr [cadence], then run cadence sync to install cron entries. Function-only: no tmux, no Claude.
+cli: conductr begin [<skill> [<schedule>]] [--repo <path>] [--dry-run]
 ---
 
 # Begin
