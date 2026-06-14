@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-pub use crate::types::{InstanceError, LocalAgentError, TmuxError};
+pub use crate::types::{CrontabError, InstanceError, LocalAgentError, TmuxError};
 
 use crate::signals::{MailKind, MailMessage, MailRef};
 use crate::types::{
@@ -120,6 +120,16 @@ pub trait ScmHost: Send + Sync {
     ) -> anyhow::Result<Option<f64>> {
         Ok(None)
     }
+}
+
+// ── CrontabAgent ─────────────────────────────────────────────────────────────
+
+#[async_trait]
+pub trait CrontabAgent: Send + Sync {
+    /// Returns the raw crontab text for the current user.
+    /// `Err(CrontabError::NoCrontab)` when the user has no crontab.
+    /// `Err(CrontabError::NotInstalled)` when `crontab` is not on PATH.
+    async fn list(&self) -> Result<String, CrontabError>;
 }
 
 // ── TmuxAgent ─────────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ description = "Feature-gated driven adapters implementing conductr-core port tra
 [features]
 default = []
 tmux        = ["dep:tokio"]
+crontab     = ["dep:tokio"]
 beads       = ["dep:tokio"]
 notion      = ["dep:tokio", "dep:reqwest", "dep:url"]
 gh-cli      = ["dep:tokio", "dep:once_cell", "dep:regex"]
@@ -19,7 +20,7 @@ ollama      = ["dep:tokio", "dep:reqwest"]
 llamacpp    = ["dep:tokio", "dep:reqwest"]
 local-ci    = ["dep:tokio"]
 gcal        = ["dep:tokio", "dep:reqwest"]
-full        = ["tmux", "beads", "notion", "gh-cli", "mail-fs", "mail-github", "mock", "ollama", "llamacpp", "local-ci", "gcal"]
+full        = ["tmux", "crontab", "beads", "notion", "gh-cli", "mail-fs", "mail-github", "mock", "ollama", "llamacpp", "local-ci", "gcal"]
 
 [dependencies]
 conductr-core = { workspace = true }

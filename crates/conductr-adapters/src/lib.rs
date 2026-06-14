@@ -1,6 +1,9 @@
 #[cfg(feature = "tmux")]
 pub mod tmux;
 
+#[cfg(feature = "crontab")]
+pub mod crontab;
+
 #[cfg(feature = "beads")]
 pub mod beads;
 
