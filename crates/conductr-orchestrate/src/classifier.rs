@@ -149,6 +149,7 @@ mod tests {
             state: PrState::Open,
             ci: CiStatus::Passing,
             linked_issue: Some(1),
+            is_fork: false,
         };
         let c = classify(&i, &BTreeSet::new(), &[pr], &BTreeSet::new());
         assert_eq!(c.bucket, Bucket::PrOpen);
@@ -166,6 +167,7 @@ mod tests {
             state: PrState::Open,
             ci: CiStatus::Failing,
             linked_issue: Some(1),
+            is_fork: false,
         };
         let c = classify(&i, &BTreeSet::new(), &[pr], &BTreeSet::new());
         assert_eq!(c.bucket, Bucket::PrFailing);

@@ -149,10 +149,23 @@ impl<C: ScmHost> Orchestrator<C> {
         }
 
         // ── Run local CI and resolve CiStatus for each open PR. ───────────────
+        //
+        // SECURITY: local CI executes the PR's code (build.rs, proc-macros,
+        // test helpers) on the operator's machine without OS-level isolation.
+        // Fork PRs are skipped by default (`allow_fork_local_ci = false`) to
+        // prevent untrusted contributor code from running with operator
+        // privileges. Set `allow_fork_local_ci = true` only for trusted forks.
         let mut local_ci_results: Vec<PrLocalCiResult> = Vec::new();
         if let Some(local_ci) = &self.local_ci {
             for pr in &mut prs {
                 if pr.state != PrState::Open {
+                    continue;
+                }
+                if pr.is_fork && !self.config.allow_fork_local_ci {
+                    warn!(
+                        pr = pr.number,
+                        "skipping local CI for fork PR (set allow_fork_local_ci to override)"
+                    );
                     continue;
                 }
                 match local_ci.run(&pr.head_ref).await {
@@ -964,6 +977,7 @@ mod tests {
             state: conductr_core::types::PrState::Open,
             ci,
             linked_issue: Some(issue_num),
+            is_fork: false,
         }
     }
 
@@ -1086,6 +1100,101 @@ mod tests {
         assert_eq!(
             report.soft_chord_deferred.len(), 1,
             "second BUREAUCRATIC routine should be deferred, got {:?}", report.soft_chord_deferred
+        );
+    }
+
+    // ── Fork PR provenance tests ──────────────────────────────────────────────
+
+    use conductr_core::types::LocalCiReport;
+
+    struct SpyLocalCi {
+        ran_for: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl LocalCi for SpyLocalCi {
+        async fn run(&self, head_ref: &str) -> anyhow::Result<LocalCiReport> {
+            self.ran_for.lock().unwrap().push(head_ref.to_string());
+            Ok(LocalCiReport { status: CiStatus::Passing, commands: vec![] })
+        }
+    }
+
+    fn fork_pr(pr_num: u64, issue_num: IssueNumber) -> Pr {
+        Pr {
+            number: pr_num,
+            title: format!("fork-pr-{pr_num}"),
+            body: String::new(),
+            head_ref: format!("external/issue-{issue_num}-fix"),
+            state: conductr_core::types::PrState::Open,
+            ci: CiStatus::Unknown,
+            linked_issue: Some(issue_num),
+            is_fork: true,
+        }
+    }
+
+    /// By default, local CI must not run for fork PRs (is_fork = true).
+    #[tokio::test]
+    async fn fork_pr_skips_local_ci_by_default() {
+        let ran_for = Arc::new(Mutex::new(vec![]));
+        let spy = Arc::new(SpyLocalCi { ran_for: ran_for.clone() });
+
+        let client = MockScmHost::new()
+            .with_issues([make_issue(1, &[])])
+            .with_prs([fork_pr(10, 1)]);
+        let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
+        // allow_fork_local_ci defaults to false
+        assert!(!cfg.allow_fork_local_ci);
+
+        let mut orch = Orchestrator::new(client, cfg).with_local_ci(spy);
+        orch.run_cycle().await.unwrap();
+
+        assert!(
+            ran_for.lock().unwrap().is_empty(),
+            "local CI should not run for fork PRs when allow_fork_local_ci is false"
+        );
+    }
+
+    /// When allow_fork_local_ci is explicitly set to true, fork PRs run local CI.
+    #[tokio::test]
+    async fn fork_pr_runs_local_ci_when_allowed() {
+        let ran_for = Arc::new(Mutex::new(vec![]));
+        let spy = Arc::new(SpyLocalCi { ran_for: ran_for.clone() });
+
+        let client = MockScmHost::new()
+            .with_issues([make_issue(1, &[])])
+            .with_prs([fork_pr(10, 1)]);
+        let mut cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
+        cfg.allow_fork_local_ci = true;
+
+        let mut orch = Orchestrator::new(client, cfg).with_local_ci(spy);
+        orch.run_cycle().await.unwrap();
+
+        assert_eq!(
+            *ran_for.lock().unwrap(),
+            vec!["external/issue-1-fix"],
+            "local CI should run for fork PRs when allow_fork_local_ci is true"
+        );
+    }
+
+    /// Non-fork PRs (is_fork = false) always run local CI regardless of the flag.
+    #[tokio::test]
+    async fn non_fork_pr_always_runs_local_ci() {
+        let ran_for = Arc::new(Mutex::new(vec![]));
+        let spy = Arc::new(SpyLocalCi { ran_for: ran_for.clone() });
+
+        let client = MockScmHost::new()
+            .with_issues([make_issue(1, &[])])
+            .with_prs([make_pr_for_issue(10, 1, CiStatus::Unknown)]);
+        let cfg = OrchestratorConfig::new(RepoSlug::new("o", "r"));
+        // allow_fork_local_ci = false but this PR is not a fork
+
+        let mut orch = Orchestrator::new(client, cfg).with_local_ci(spy);
+        orch.run_cycle().await.unwrap();
+
+        assert_eq!(
+            *ran_for.lock().unwrap(),
+            vec!["claude/issue-1-fix"],
+            "non-fork PRs should always run local CI"
         );
     }
 }

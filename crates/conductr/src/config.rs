@@ -33,6 +33,11 @@ pub struct CiSection {
     /// Per-PR CI run records appended by the orchestrate pass (`[[ci.runs]]`).
     #[serde(default)]
     pub runs: Vec<CiRun>,
+    /// When false (default), local CI is not run for PRs from forks.
+    /// Local CI executes untrusted PR code (build.rs, proc-macros, tests) on
+    /// the operator's machine. Enable only for trusted forks.
+    #[serde(default)]
+    pub allow_fork_prs: bool,
 }
 
 impl Default for CiSection {
@@ -42,6 +47,7 @@ impl Default for CiSection {
             timeout_secs: default_timeout_secs(),
             mode: CiMode::default(),
             runs: Vec::new(),
+            allow_fork_prs: false,
         }
     }
 }

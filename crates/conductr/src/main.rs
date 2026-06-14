@@ -1975,6 +1975,7 @@ async fn run_orchestrate(args: OrchestrateArgs) -> Result<()> {
         .map(CiMode::from)
         .unwrap_or(ci_section.mode);
 
+    let allow_fork_prs = ci_section.allow_fork_prs;
     let local_ci: Option<std::sync::Arc<dyn LocalCi>> = if ci_section.commands.is_empty() {
         None
     } else {
@@ -1996,6 +1997,7 @@ async fn run_orchestrate(args: OrchestrateArgs) -> Result<()> {
     cfg.poll_interval = std::time::Duration::from_secs(args.poll_secs);
     cfg.default_human_assignee = args.human_assignee;
     cfg.ci_mode = ci_mode;
+    cfg.allow_fork_local_ci = allow_fork_prs;
     cfg.max_parallel_beats = orch_section.max_parallel_beats as usize;
     cfg.max_parallel_qa = orch_section.max_parallel_qa.unwrap_or(2) as usize;
     cfg.tmux_cwd = Some(repo_root.to_string_lossy().into_owned());

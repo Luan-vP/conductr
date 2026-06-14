@@ -103,6 +103,8 @@ impl ScmHost for GhCli {
             head_ref_name: String,
             #[serde(rename = "statusCheckRollup", default)]
             status: Vec<RawCheck>,
+            #[serde(rename = "isCrossRepository", default)]
+            is_cross_repository: bool,
         }
         let out = run_gh(&[
             "pr",
@@ -112,7 +114,7 @@ impl ScmHost for GhCli {
             "--state",
             "open",
             "--json",
-            "number,title,body,headRefName,statusCheckRollup",
+            "number,title,body,headRefName,statusCheckRollup,isCrossRepository",
             "--limit",
             "200",
         ])
@@ -130,6 +132,7 @@ impl ScmHost for GhCli {
                     state: PrState::Open,
                     ci: rollup_to_ci(&r.status),
                     linked_issue: linked_issue_from(&r.head_ref_name, &body),
+                    is_fork: r.is_cross_repository,
                 }
             })
             .collect())

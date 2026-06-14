@@ -199,6 +199,11 @@ pub struct Pr {
     pub state: PrState,
     pub ci: CiStatus,
     pub linked_issue: Option<IssueNumber>,
+    /// True when the PR originates from a fork of the target repository.
+    /// Local CI is skipped for fork PRs by default to avoid running
+    /// untrusted code on the operator's machine.
+    #[serde(default)]
+    pub is_fork: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,6 +321,9 @@ pub struct OrchestratorConfig {
     /// amber after this duration (from when the issue was first deferred), the
     /// orchestrator dispatches anyway. Default: 10 minutes.
     pub soft_chord_timeout: std::time::Duration,
+    /// When false (default), the orchestrator skips local CI for PRs from
+    /// forked repositories. Set to true only when the fork is trusted.
+    pub allow_fork_local_ci: bool,
 }
 
 impl OrchestratorConfig {
@@ -334,6 +342,7 @@ impl OrchestratorConfig {
             conductr_config_path: None,
             safety_preset: None,
             soft_chord_timeout: std::time::Duration::from_secs(600),
+            allow_fork_local_ci: false,
         }
     }
 }

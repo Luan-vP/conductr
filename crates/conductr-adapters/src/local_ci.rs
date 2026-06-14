@@ -1,4 +1,26 @@
 //! Local CI adapter: runs project-defined commands in an isolated git worktree.
+//!
+//! # Security / trust boundary
+//!
+//! **This adapter executes untrusted PR code on the operator's host machine.**
+//!
+//! `run` fetches the PR's `head_ref` from `origin` and checks it out into a
+//! temporary git worktree, then executes the configured command list (e.g.
+//! `cargo test`, `cargo build`) inside that checkout.  The command list is
+//! operator-controlled (read from `.conductr [ci]`), but the *code those
+//! commands compile and run* comes from the PR author.  On a Rust project this
+//! includes `build.rs` scripts and proc-macros that execute at compile time, as
+//! well as test helpers that execute at test time — all with the operator's full
+//! user privileges.
+//!
+//! Mitigations in place: a configurable timeout and `kill_on_drop(true)`.
+//! There is **no** OS-level isolation (no container, namespace, or seccomp).
+//!
+//! The orchestrator skips local CI for fork PRs by default
+//! (`OrchestratorConfig::allow_fork_local_ci = false`).  Same-repo PRs are
+//! assumed to be authored by contributors who already have write access.  Set
+//! `allow_fork_prs = true` in `.conductr [ci]` only for forks you explicitly
+//! trust, or when running in a disposable environment.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
