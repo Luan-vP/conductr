@@ -1,6 +1,7 @@
 ---
 name: pod
 description: Diagnose, heal, and save-state across the local Claude Code pod (other tmux sessions on this host). Use when the user asks to check / restart / snapshot other Claude threads, e.g. "are the other threads ok", "restart everything to pick up new skills", "save state across the pod before I reboot".
+cli: conductr pod diagnose|heal|save-state|free [...]
 ---
 
 # pod

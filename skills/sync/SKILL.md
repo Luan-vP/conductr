@@ -1,7 +1,7 @@
 ---
 name: sync
 description: Schedule and reconcile conductr calendar events in Google Calendar. Places decision slots for open human-labeled issues (priority by downstream blocking count), lets users manually schedule test slots, and fully reconciles future events on every run. Invoked automatically after every orchestrate run.
-cli_parity: true
+cli: conductr sync [schedule-test]
 ---
 
 # Sync

@@ -1,6 +1,7 @@
 ---
 name: setup
 description: Check and improve repository maturity, provision projects from the machine-wide registry, and configure the Claude GitHub App. Wraps `conductr setup status`, `conductr setup wizard`, `conductr setup install-claude-app`, and `conductr setup spawn`.
+cli: conductr setup status|wizard|install-claude-app|spawn [...]
 ---
 
 # setup
