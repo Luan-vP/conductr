@@ -11,6 +11,12 @@ Notion, gh, …) live behind feature flags in a single adapters crate.
               ┌────────────────────────────────────┐
   driving     │  crates/conductr   (binary, CLI)   │
               │  skills/*          (markdown)      │
+              │  crates/conductr-dashboard-daemon  │
+              └─────────────────┬──────────────────┘
+                                ▼
+              ┌────────────────────────────────────┐
+  dashboard   │  crates/conductr-dashboard-core    │
+  model       │   (pure domain / SSE event types)  │
               └─────────────────┬──────────────────┘
                                 ▼
               ┌────────────────────────────────────┐
@@ -21,6 +27,7 @@ Notion, gh, …) live behind feature flags in a single adapters crate.
               │  crates/conductr-schedule  (pure)  │
               │  crates/conductr-mail              │
               │  crates/conductr-setup             │
+              │  crates/conductr-calendar          │
               └─────────────────┬──────────────────┘
                                 ▼
               ┌────────────────────────────────────┐
@@ -32,11 +39,16 @@ Notion, gh, …) live behind feature flags in a single adapters crate.
               ┌────────────────────────────────────┐
   adapters    │  crates/conductr-adapters          │
   (folds)     │   feature: tmux                    │
+              │   feature: crontab                 │
               │   feature: beads                   │
               │   feature: notion                  │
               │   feature: gh-cli                  │
               │   feature: mail-fs                 │
               │   feature: mail-github             │
+              │   feature: ollama                  │
+              │   feature: llamacpp                │
+              │   feature: local-ci                │
+              │   feature: gcal                    │
               │   feature: mock                    │
               └────────────────────────────────────┘
 ```
@@ -50,8 +62,12 @@ no longer represent it. The current ports:
 |--------------------|--------------------------------------|------------------------------------------|
 | `IssueTracker`     | `beads` (br CLI)                     | `notion`, `linear`, `github-issues`      |
 | `ScmHost`          | `gh-cli`                             | `github-rest`, `gitlab`                  |
+| `CrontabAgent`     | `crontab`                            | —                                        |
 | `TmuxAgent`        | `tmux` (local subprocess)            | `ssh-tmux` (remote)                      |
 | `InstanceProvider` | `mock` (stub)                        | `aws`, `hetzner`, `digitalocean`, `local`|
+| `LocalAgent`       | `llamacpp`, `ollama`                 | —                                        |
+| `LocalCi`          | `local-ci`                           | —                                        |
+| `CalendarPort`     | `gcal` (Google Calendar)             | —                                        |
 | `Mailbox`          | `mail-fs`, `mail-github`             | `mail-slack`                             |
 
 Mocks live alongside real adapters (feature `mock`) and are consumed by
@@ -80,6 +96,12 @@ a workspace member; it shells out to the binary. So adding a skill is
 a documentation change, not a code change. New skills compose existing
 CLI subcommands; they should not introduce new flows that the CLI does
 not already expose.
+
+The dashboard daemon (`crates/conductr-dashboard-daemon`) is a second
+driving adapter: a read-only Unix-socket SSE server that aggregates
+system state. It reads from `conductr-core` ports directly (bypassing
+the use-case arms) and uses `conductr-dashboard-core` as its pure
+domain model for SSE event types.
 
 ## When to update this doc
 
