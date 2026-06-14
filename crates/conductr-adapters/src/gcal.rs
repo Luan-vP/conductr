@@ -7,6 +7,7 @@
 //! scope here — obtain a token via `gcloud auth print-access-token` or an
 //! equivalent OAuth flow and export it before running `conductr sync`.
 
+use std::fmt;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -22,11 +23,20 @@ const MAX_PAGES: usize = 10;
 
 // ── Public adapter ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GcalAdapter {
     client: reqwest::Client,
     token: String,
     calendar_id: String,
+}
+
+impl fmt::Debug for GcalAdapter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GcalAdapter")
+            .field("token", &"***")
+            .field("calendar_id", &self.calendar_id)
+            .finish()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

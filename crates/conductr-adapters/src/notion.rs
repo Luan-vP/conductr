@@ -9,6 +9,7 @@
 //!
 //! Reference: https://developers.notion.com/reference/intro
 
+use std::fmt;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -22,12 +23,22 @@ use conductr_core::types::{Task, TaskStatus};
 const NOTION_VERSION: &str = "2022-06-28";
 const BASE_URL: &str = "https://api.notion.com/v1";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Notion {
     pub client: reqwest::Client,
-    pub token: String,
+    token: String,
     pub version: String,
     pub database_id: Option<String>,
+}
+
+impl fmt::Debug for Notion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Notion")
+            .field("token", &"***")
+            .field("version", &self.version)
+            .field("database_id", &self.database_id)
+            .finish()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
