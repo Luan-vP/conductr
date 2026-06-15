@@ -85,7 +85,7 @@ fn parse_existing_numbers(text: &str, section_header: &str, key: &str) -> BTreeS
             in_section = false;
         } else if in_section {
             if let Some(rest) = trimmed.strip_prefix(key) {
-                let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=').trim();
+                let rest = rest.trim_start_matches([' ', '=']).trim();
                 if let Ok(n) = rest.parse::<u64>() {
                     nums.insert(n);
                 }
