@@ -46,7 +46,7 @@ pub fn aggregate_sibling_status(siblings: &[&Pr]) -> SiblingStatus {
 }
 
 /// Return the subset of `open_prs` that are *not* linked to `issue`.
-pub fn sibling_prs<'a>(issue: IssueNumber, open_prs: &'a [Pr]) -> Vec<&'a Pr> {
+pub fn sibling_prs(issue: IssueNumber, open_prs: &[Pr]) -> Vec<&Pr> {
     open_prs
         .iter()
         .filter(|p| p.linked_issue != Some(issue))
