@@ -55,7 +55,7 @@ impl LocalCi for LocalCiAdapter {
 
         // Fetch the remote branch into FETCH_HEAD.
         let fetch_result = run_git(
-            &["fetch", "--depth=1", "origin", head_ref],
+            &["fetch", "--depth=1", "origin", "--", head_ref],
             &self.repo_root,
         )
         .await;
