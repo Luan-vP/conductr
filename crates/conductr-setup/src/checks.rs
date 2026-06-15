@@ -223,7 +223,7 @@ pub(crate) fn check_skills_installed_with(
         None => return fail(check, "$HOME is not set — cannot locate ~/.claude/skills/"),
     };
 
-    if !claude_skills.parent().map_or(false, |p| p.exists()) {
+    if !claude_skills.parent().is_some_and(|p| p.exists()) {
         return fail(check, "~/.claude not found — is Claude Code installed?");
     }
 
