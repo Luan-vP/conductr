@@ -67,8 +67,7 @@ fn classify(pane: &str) -> Health {
     if !claude_running {
         let last_shell_line = pane
             .lines()
-            .filter(|l| !l.trim().is_empty())
-            .next_back()
+            .rfind(|l| !l.trim().is_empty())
             .map(|s| s.to_string());
         return Health::Crashed { last_shell_line };
     }
