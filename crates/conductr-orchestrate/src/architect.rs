@@ -207,7 +207,7 @@ fn highest_level_in_cluster(
         .copied()
         .filter(|&n| {
             !cluster.iter().any(|&other| {
-                other != n && deps.get(&other).map_or(false, |d| d.contains(&n))
+                other != n && deps.get(&other).is_some_and(|d| d.contains(&n))
             })
         })
         .collect();
