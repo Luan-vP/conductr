@@ -115,7 +115,7 @@ impl<C: ScmHost> Orchestrator<C> {
                     if open_issues
                         .iter()
                         .find(|i| i.number == issue_num)
-                        .map_or(false, |i| i.has_label(IN_FLIGHT_LABEL))
+                        .is_some_and(|i| i.has_label(IN_FLIGHT_LABEL))
                     {
                         if let Err(e) = self
                             .client
@@ -134,7 +134,7 @@ impl<C: ScmHost> Orchestrator<C> {
                     if open_issues
                         .iter()
                         .find(|i| i.number == issue_num)
-                        .map_or(false, |i| i.has_label(IN_FLIGHT_LABEL))
+                        .is_some_and(|i| i.has_label(IN_FLIGHT_LABEL))
                     {
                         if let Err(e) = self
                             .client
@@ -326,7 +326,7 @@ impl<C: ScmHost> Orchestrator<C> {
             if open_issues
                 .iter()
                 .find(|i| i.number == c.issue)
-                .map_or(false, |i| i.has_label(IN_FLIGHT_LABEL))
+                .is_some_and(|i| i.has_label(IN_FLIGHT_LABEL))
             {
                 info!(issue = c.issue, "skipping — conductr:in-flight label present");
                 continue;
