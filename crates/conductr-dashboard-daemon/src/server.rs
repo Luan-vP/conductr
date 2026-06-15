@@ -5,6 +5,7 @@
 //! (GET-only, no request bodies, fixed paths) that a full framework would be
 //! over-engineering.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -61,6 +62,9 @@ impl Daemon {
         }
 
         let listener = UnixListener::bind(&self.socket_path)?;
+        // Restrict to owner-only; the fallback path under ~/.local/share/ inherits the
+        // process umask, which could allow other local users to connect on multi-user hosts.
+        std::fs::set_permissions(&self.socket_path, std::fs::Permissions::from_mode(0o600))?;
         info!("conductr-daemon listening on {}", self.socket_path.display());
 
         let state = new_state();
@@ -412,5 +416,23 @@ trait PipeOr: Sized {
 impl PipeOr for String {
     fn pipe_or(self, f: impl FnOnce() -> Self) -> Self {
         if self.is_empty() { f() } else { self }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn socket_permissions_are_owner_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("test.sock");
+
+        let _listener = tokio::net::UnixListener::bind(&path).expect("bind");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("set_permissions");
+
+        let mode = std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "socket mode should be 0o600, got {mode:03o}");
     }
 }
