@@ -159,7 +159,7 @@ pub fn plan_to_pattern(plan: &Plan) -> Pattern {
 
     // Time sig: express bar size as N quarter notes.
     let q64 = NoteValue::Quarter.in_64ths();
-    let beats_per_bar = (max_64ths + q64 - 1) / q64;
+    let beats_per_bar = max_64ths.div_ceil(q64);
     let time_sig = TimeSignature { beats_per_bar, beat_unit: NoteValue::Quarter };
 
     let bars = batches.iter().zip(bar_64ths.iter()).map(|(batch, &used)| {
