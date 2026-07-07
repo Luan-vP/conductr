@@ -113,6 +113,8 @@ enum Cmd {
     ChangeOverview(ChangeOverviewArgs),
     /// Draft answers to topically-relevant open `human` issues against a change context (Claude-required).
     HumanTicketDraft(HumanTicketDraftArgs),
+    /// Record resolved interview answers, spin follow-up implementation issues, and close the `human` ticket (Claude-required).
+    HumanTicketClose(HumanTicketCloseArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -481,6 +483,7 @@ async fn main() -> Result<()> {
         Cmd::Idle(a) => run_idle(a).await,
         Cmd::ChangeOverview(a) => run_change_overview(a).await,
         Cmd::HumanTicketDraft(a) => run_human_ticket_draft(a).await,
+        Cmd::HumanTicketClose(a) => run_human_ticket_close(a).await,
     }
 }
 
@@ -3048,6 +3051,85 @@ async fn run_human_ticket_draft(args: HumanTicketDraftArgs) -> Result<()> {
     tmux.send_line(session, &skill_cmd)
         .await
         .context("sending human-ticket-draft skill command")?;
+
+    Ok(())
+}
+
+// ── Human-ticket close ────────────────────────────────────────────────────────
+
+#[derive(Debug, Parser)]
+struct HumanTicketCloseArgs {
+    /// Interview ticket number(s) to close out.
+    issues: Vec<u64>,
+    /// Repository to operate on, as `owner/repo`. Defaults to the current repo.
+    #[arg(long)]
+    repo: Option<String>,
+    /// Render drafts without posting comments, creating issues, or closing anything.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+async fn run_human_ticket_close(args: HumanTicketCloseArgs) -> Result<()> {
+    let session = "conductr-human-ticket-close";
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| ".".to_string());
+
+    let mut skill_cmd = String::from("/human-ticket-close");
+    for issue in &args.issues {
+        skill_cmd.push_str(&format!(" {issue}"));
+    }
+    if let Some(r) = &args.repo {
+        skill_cmd.push_str(&format!(" --repo {r}"));
+    }
+    if args.dry_run {
+        skill_cmd.push_str(" --dry-run");
+    }
+    let claude_cmd = "claude --dangerously-skip-permissions";
+
+    if args.dry_run {
+        let tmux = Tmux::new();
+        return run_claude_skill_dry(&tmux, "human-ticket-close", session, &cwd, claude_cmd, &skill_cmd).await;
+    }
+
+    let tmux = Tmux::new();
+    let state = ensure_session(&tmux, session, &cwd)
+        .await
+        .with_context(|| format!("ensuring tmux session '{session}'"))?;
+
+    match &state {
+        SessionState::Existing(Health::Working { activity }) => {
+            println!("human-ticket-close: session '{session}' is busy ({activity}); skipping");
+            return Ok(());
+        }
+        SessionState::Existing(Health::Unknown { reason }) => {
+            println!("human-ticket-close: session '{session}' is unclassified ({reason}); skipping");
+            return Ok(());
+        }
+        SessionState::Existing(Health::Crashed { .. }) => {
+            println!("human-ticket-close: session '{session}' crashed — restarting Claude");
+            tmux.send_line(session, claude_cmd)
+                .await
+                .context("restarting Claude after crash")?;
+            wait_for_idle(&tmux, session).await?;
+        }
+        SessionState::Created => {
+            println!("human-ticket-close: created session '{session}' — starting Claude");
+            tmux.send_line(session, claude_cmd)
+                .await
+                .context("starting Claude in new session")?;
+            wait_for_idle(&tmux, session).await?;
+        }
+        SessionState::Existing(Health::Idle { .. }) => {
+            println!("human-ticket-close: session '{session}' is idle — sending prompt");
+        }
+    }
+
+    println!("human-ticket-close: sending: {skill_cmd}");
+    tmux.send_line(session, &skill_cmd)
+        .await
+        .context("sending human-ticket-close skill command")?;
 
     Ok(())
 }
