@@ -7,6 +7,10 @@ use crate::types::SafetyPreset;
 /// 1. Per-routine override (`routine`) — derived from a `safety:<preset>` label on the issue
 /// 2. Orchestrator-level config override (`cfg`)
 /// 3. Repo maturity-derived default
+///
+/// Maturity-derived defaults top out at [`SafetyPreset::Fast`]. `Strict` and
+/// `Bureaucratic` are pin-only — reachable only via `cfg` or `routine` — so
+/// the heaviest process overhead is never imposed without an explicit choice.
 pub fn resolve_preset(
     maturity: MaturityLevel,
     cfg: Option<SafetyPreset>,
@@ -21,9 +25,9 @@ pub fn resolve_preset(
     match maturity {
         MaturityLevel::L0Bootstrap | MaturityLevel::L1Tested => SafetyPreset::Unhinged,
         MaturityLevel::L2GitFlow => SafetyPreset::Feral,
-        MaturityLevel::L3Architected => SafetyPreset::Fast,
-        MaturityLevel::L4Skilled => SafetyPreset::Strict,
-        MaturityLevel::L5Orchestrated => SafetyPreset::Bureaucratic,
+        MaturityLevel::L3Architected | MaturityLevel::L4Skilled | MaturityLevel::L5Orchestrated => {
+            SafetyPreset::Fast
+        }
     }
 }
 
@@ -71,8 +75,26 @@ mod tests {
         assert_eq!(resolve_preset(L1Tested, None, None), Unhinged);
         assert_eq!(resolve_preset(L2GitFlow, None, None), Feral);
         assert_eq!(resolve_preset(L3Architected, None, None), Fast);
-        assert_eq!(resolve_preset(L4Skilled, None, None), Strict);
-        assert_eq!(resolve_preset(L5Orchestrated, None, None), Bureaucratic);
+        assert_eq!(resolve_preset(L4Skilled, None, None), Fast);
+        assert_eq!(resolve_preset(L5Orchestrated, None, None), Fast);
+    }
+
+    #[test]
+    fn maturity_defaults_never_reach_strict_or_bureaucratic() {
+        for m in [
+            L0Bootstrap,
+            L1Tested,
+            L2GitFlow,
+            L3Architected,
+            L4Skilled,
+            L5Orchestrated,
+        ] {
+            let preset = resolve_preset(m, None, None);
+            assert!(
+                preset != Strict && preset != Bureaucratic,
+                "maturity {m:?} auto-defaulted to {preset:?}, but Strict/Bureaucratic must be pin-only"
+            );
+        }
     }
 
     #[test]
