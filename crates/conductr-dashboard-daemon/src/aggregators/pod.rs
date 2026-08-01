@@ -92,8 +92,15 @@ impl PodAggregator {
             .collect();
 
         let idle_seconds = (Utc::now() - session.last_activity).num_seconds().max(0);
-        Ok(Diagnosis { session, health, idle_seconds, tail })
+        let remote_control = remote_control_active(&pane);
+        Ok(Diagnosis { session, health, idle_seconds, remote_control, tail })
     }
+}
+
+/// Mirror of `conductr_pod::diagnose::remote_control_active` — kept inline to
+/// avoid a crate dependency, consistent with the local `classify_pane` copy.
+fn remote_control_active(pane: &str) -> bool {
+    pane.contains("/remote-control is active") || pane.contains("/rc active")
 }
 
 fn classify_pane(pane: &str) -> Health {

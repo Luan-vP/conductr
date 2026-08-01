@@ -37,6 +37,7 @@ mod tests {
             },
             health,
             idle_seconds,
+            remote_control: false,
             tail: vec![],
         }
     }
