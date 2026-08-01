@@ -119,15 +119,30 @@ fn is_conductr_checkout(p: &Path) -> bool {
     p.join("crates/conductr/Cargo.toml").is_file()
 }
 
-/// Locate the conductr checkout: explicit path → registry project whose repo
-/// basename is `conductr` → current directory. Verifies the result actually
-/// looks like a conductr checkout so we never `cargo install` the wrong tree.
+/// The checkout this binary was built from, per `cargo install`. `CARGO_MANIFEST_DIR`
+/// is the `crates/conductr` crate dir at build time; the repo root is two levels up.
+/// This is the most reliable "update myself" signal — it does not depend on the
+/// caller's cwd or on the registry parsing cleanly.
+fn build_time_checkout() -> Option<PathBuf> {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.parent()?.parent()?; // crates/conductr → crates → repo root
+    is_conductr_checkout(root).then(|| root.to_path_buf())
+}
+
+/// Locate the conductr checkout, in order: explicit path → the checkout this
+/// binary was built from → registry project whose repo basename is `conductr` →
+/// current directory. Every candidate is verified to actually look like a
+/// conductr checkout so we never `cargo install` the wrong tree.
 fn resolve_repo(explicit: Option<PathBuf>, registry_path: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = explicit {
         if is_conductr_checkout(&p) {
             return Ok(p);
         }
         bail!("{} is not a conductr checkout (no crates/conductr/Cargo.toml)", p.display());
+    }
+
+    if let Some(p) = build_time_checkout() {
+        return Ok(p);
     }
 
     if let Ok(reg) = registry::load(registry_path) {
@@ -275,6 +290,14 @@ mod tests {
         std::fs::write(tmp.path().join("crates/conductr/Cargo.toml"), "[package]\n").unwrap();
         let got = resolve_repo(Some(tmp.path().to_path_buf()), None).unwrap();
         assert_eq!(got, tmp.path());
+    }
+
+    #[test]
+    fn resolve_falls_back_to_build_time_checkout() {
+        // With no explicit path, resolution finds the checkout this test binary
+        // was built from (CARGO_MANIFEST_DIR/../..) regardless of cwd.
+        let got = resolve_repo(None, None).unwrap();
+        assert!(is_conductr_checkout(&got), "resolved path should be a conductr checkout");
     }
 
     #[test]
