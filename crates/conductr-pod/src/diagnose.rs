@@ -42,6 +42,7 @@ pub async fn diagnose_one(tmux: &impl TmuxAgent, name: &str) -> Result<Diagnosis
 async fn diagnose_session(tmux: &impl TmuxAgent, session: TmuxSession) -> Result<Diagnosis, TmuxError> {
     let pane = tmux.capture_pane(&session.name).await?;
     let health = classify(&pane);
+    let remote_control = remote_control_active(&pane);
     let tail: Vec<String> = pane
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -53,7 +54,16 @@ async fn diagnose_session(tmux: &impl TmuxAgent, session: TmuxSession) -> Result
         .rev()
         .collect();
     let idle_seconds = (Utc::now() - session.last_activity).num_seconds().max(0);
-    Ok(Diagnosis { session, health, idle_seconds, tail })
+    Ok(Diagnosis { session, health, idle_seconds, remote_control, tail })
+}
+
+/// True when Claude Code's Remote Control is active in the rendered pane.
+///
+/// An active session renders a banner (`/remote-control is active · Continue
+/// here, on your phone, or at https://claude.ai/code/session_…`) and a compact
+/// `/rc active` marker in the status footer. Either marker is sufficient.
+pub fn remote_control_active(pane: &str) -> bool {
+    pane.contains("/remote-control is active") || pane.contains("/rc active")
 }
 
 fn classify(pane: &str) -> Health {
@@ -221,6 +231,46 @@ user@host:~/developer$
     #[test]
     fn empty_pane_is_unknown() {
         assert!(matches!(classify(""), Health::Unknown { .. }));
+    }
+
+    const RC_ACTIVE_PANE: &str = r#"
+           Claude Code v2.1.220
+ ▐▛███▜▌   Sonnet 5 · Claude Pro
+▝▜█████▛▘  /home/dev
+  /remote-control is active · Continue here, on your phone, or at
+  https://claude.ai/code/session_01EdD2D4JHuLKQZrfJjQPctc
+────────────────────────────────────────────────────────────────────────────────
+❯ make one more
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents         ● high · /effort
+                                                                    /rc active
+"#;
+
+    #[test]
+    fn detects_remote_control_active() {
+        assert!(remote_control_active(RC_ACTIVE_PANE));
+        // Footer marker alone is sufficient.
+        assert!(remote_control_active("some pane\n  /rc active\n"));
+    }
+
+    #[test]
+    fn detects_remote_control_inactive() {
+        // IDLE_PANE has no remote-control markers.
+        assert!(!remote_control_active(IDLE_PANE));
+        assert!(!remote_control_active(""));
+    }
+
+    #[tokio::test]
+    async fn mock_diagnose_reports_remote_control() {
+        use conductr_adapters::mock::MockTmuxAgent;
+        let mock = MockTmuxAgent::new()
+            .with_session("rc-on", RC_ACTIVE_PANE)
+            .with_session("rc-off", IDLE_PANE);
+        let diagnoses = diagnose_all(&mock, None).await.unwrap();
+        let on = diagnoses.iter().find(|d| d.session.name == "rc-on").unwrap();
+        let off = diagnoses.iter().find(|d| d.session.name == "rc-off").unwrap();
+        assert!(on.remote_control, "rc-on should report remote_control = true");
+        assert!(!off.remote_control, "rc-off should report remote_control = false");
     }
 
     #[test]

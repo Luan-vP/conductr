@@ -136,6 +136,11 @@ pub struct Diagnosis {
     pub session: TmuxSession,
     pub health: Health,
     pub idle_seconds: i64,
+    /// Whether Claude Code's Remote Control (`/remote-control` / `/rc`) is active
+    /// for this session — i.e. it can be driven from claude.ai or the mobile app.
+    /// Orthogonal to [`Health`]: an idle *or* working session may have it on/off.
+    #[serde(default)]
+    pub remote_control: bool,
     pub tail: Vec<String>,
 }
 

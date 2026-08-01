@@ -655,7 +655,7 @@ async fn run_diagnose(args: DiagnoseArgs) -> Result<()> {
         println!("no sessions matched (pattern={:?})", pattern.unwrap_or("*"));
         return Ok(());
     }
-    println!("{:<20} {:<9} {:>8}  {}", "SESSION", "HEALTH", "IDLE", "DETAIL");
+    println!("{:<20} {:<9} {:>8}  {:<3} {}", "SESSION", "HEALTH", "IDLE", "RC", "DETAIL");
     for d in &diagnoses {
         let (label, detail) = match &d.health {
             Health::Idle { last_message, tokens } => (
@@ -673,11 +673,13 @@ async fn run_diagnose(args: DiagnoseArgs) -> Result<()> {
             ),
             Health::Unknown { reason } => ("unknown", reason.clone()),
         };
+        let rc = if d.remote_control { "on" } else { "off" };
         println!(
-            "{:<20} {:<9} {:>7}s  {}",
+            "{:<20} {:<9} {:>7}s  {:<3} {}",
             d.session.name,
             label,
             d.idle_seconds,
+            rc,
             truncate(&detail, 80),
         );
     }
@@ -1019,6 +1021,29 @@ async fn run_ensure_session(args: EnsureSessionArgs) -> Result<()> {
         }
     };
 
+    // Ensure Remote Control is on so the session is driveable from claude.ai and
+    // the mobile app. Gated on the diagnosed state: re-sending `/remote-control`
+    // to an already-active session opens an interactive menu rather than
+    // toggling, so we only send it when RC is reported inactive.
+    if ready {
+        match diagnose_one(&tmux, &session).await {
+            Ok(d) if d.remote_control => {
+                println!("ensure-session: remote_control_already_active");
+            }
+            Ok(_) => {
+                tmux.send_line(&session, "/remote-control")
+                    .await
+                    .context("enabling remote control")?;
+                // Give the TUI a moment to activate RC before any --then prompt.
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                println!("ensure-session: remote_control_enabled");
+            }
+            Err(e) => {
+                println!("ensure-session: remote_control_check_failed: {e}");
+            }
+        }
+    }
+
     if let Some(then_cmd) = &args.then_cmd {
         if !ready {
             return Ok(());
@@ -1069,6 +1094,7 @@ async fn run_ensure_session_dry(
 
     if sessions.iter().any(|s| s.name == session) {
         println!("ensure-session: session '{session}' already exists");
+        println!("ensure-session: → would enable remote control if inactive (`/remote-control`)");
         if let Some(cmd) = then_cmd {
             println!("ensure-session: → would run: `{cmd}`");
         }
@@ -1076,6 +1102,7 @@ async fn run_ensure_session_dry(
         println!("ensure-session: session '{session}' does not exist");
         println!("ensure-session: → would create session at cwd={cwd}");
         println!("ensure-session: → would start Claude: `{claude_cmd}`");
+        println!("ensure-session: → would enable remote control if inactive (`/remote-control`)");
         if let Some(cmd) = then_cmd {
             println!("ensure-session: → would run: `{cmd}`");
         }
