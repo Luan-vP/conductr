@@ -31,8 +31,9 @@ Keep the installed `conductr` binary current before scanning:
 conductr self-update
 ```
 
-This resolves the conductr checkout from the registry, fast-forwards the branch
-it is installed from (`develop`), and re-runs `cargo install` — but only if it
+This resolves the conductr checkout it was built from (independent of cwd),
+fast-forwards the branch it is installed from (`develop`), and re-runs
+`cargo install` — but only if it
 has not already done so in the last 24h (rate-limited via a state file), so
 running it every idle pass rebuilds at most daily. It is a no-op on `--dry-run`
 beyond printing the plan, and never blocks the scan: if the fetch/pull/install
