@@ -23,6 +23,22 @@ if needed, and sends `/idle`. Both forms must stay in sync (parity rule).
 
 ## Workflow
 
+### Phase 0 — Self-update (deterministic)
+
+Keep the installed `conductr` binary current before scanning:
+
+```bash
+conductr self-update
+```
+
+This resolves the conductr checkout from the registry, fast-forwards the branch
+it is installed from (`develop`), and re-runs `cargo install` — but only if it
+has not already done so in the last 24h (rate-limited via a state file), so
+running it every idle pass rebuilds at most daily. It is a no-op on `--dry-run`
+beyond printing the plan, and never blocks the scan: if the fetch/pull/install
+fails it logs one line and phase 1 continues. Pass `--force` to update
+immediately regardless of the interval.
+
 ### Phase 1 — Read configuration
 
 Read `.conductr` from the repo root:

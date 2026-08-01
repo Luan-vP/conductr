@@ -6,6 +6,7 @@ mod idle;
 mod local_detect;
 mod parity;
 mod registry;
+mod self_update;
 mod setup_spawn;
 mod tempo_profile;
 mod wiring;
@@ -109,6 +110,8 @@ enum Cmd {
     Sync(SyncArgs),
     /// Self-directed scan: architecture check + module clippy scan → file issues (Claude-required).
     Idle(IdleArgs),
+    /// Update the installed `conductr` binary: pull the checkout's branch and re-install (daily-rate-limited).
+    SelfUpdate(SelfUpdateArgs),
     /// Manual diff impact report: topology / LOC % / user flows / compliance / tech debt (Claude-required).
     ChangeOverview(ChangeOverviewArgs),
     /// Draft answers to topically-relevant open `human` issues against a change context (Claude-required).
@@ -481,6 +484,7 @@ async fn main() -> Result<()> {
         Cmd::Architect(a) => run_architect(a).await,
         Cmd::Sync(a) => run_sync(a).await,
         Cmd::Idle(a) => run_idle(a).await,
+        Cmd::SelfUpdate(a) => run_self_update(a),
         Cmd::ChangeOverview(a) => run_change_overview(a).await,
         Cmd::HumanTicketDraft(a) => run_human_ticket_draft(a).await,
         Cmd::HumanTicketClose(a) => run_human_ticket_close(a).await,
@@ -2760,6 +2764,36 @@ struct IdleArgs {
     dry_run: bool,
 }
 
+#[derive(Debug, Parser)]
+struct SelfUpdateArgs {
+    /// The conductr checkout to update. Defaults to the registry's conductr
+    /// project, then the current directory.
+    #[arg(long)]
+    repo_path: Option<PathBuf>,
+    /// Registry path (`~/.conductr` when omitted).
+    #[arg(long)]
+    registry: Option<PathBuf>,
+    /// Update even if the interval has not elapsed and HEAD did not move.
+    #[arg(long)]
+    force: bool,
+    /// Minimum hours between real updates.
+    #[arg(long, default_value_t = 24)]
+    interval_hours: i64,
+    /// Print the plan without fetching, pulling, or installing.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+fn run_self_update(args: SelfUpdateArgs) -> Result<()> {
+    self_update::run(&self_update::SelfUpdateOpts {
+        repo_path: args.repo_path,
+        registry_path: args.registry,
+        force: args.force,
+        dry_run: args.dry_run,
+        interval_hours: args.interval_hours,
+    })
+}
+
 async fn run_idle(args: IdleArgs) -> Result<()> {
     let session = "conductr-idle";
     let cwd = args
@@ -2770,6 +2804,16 @@ async fn run_idle(args: IdleArgs) -> Result<()> {
 
     let skill_cmd = "/idle";
     let claude_cmd = "claude --dangerously-skip-permissions";
+
+    // Phase 0: keep the conductr binary current (rate-limited to daily). The
+    // conductr checkout is resolved from the registry, independent of the repo
+    // this idle pass targets. Non-fatal — a failed update never blocks the scan.
+    if let Err(e) = self_update::run(&self_update::SelfUpdateOpts {
+        dry_run: args.dry_run,
+        ..Default::default()
+    }) {
+        println!("idle: self-update skipped ({e})");
+    }
 
     if args.dry_run {
         let tmux = Tmux::new();
