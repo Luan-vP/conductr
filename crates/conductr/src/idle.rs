@@ -577,12 +577,83 @@ pub fn has_cargo_toml(repo_path: &Path) -> bool {
     repo_path.join("Cargo.toml").exists()
 }
 
+/// `dependencies`/`devDependencies` names that mark a `package.json` as
+/// belonging to a UI framework rather than a plain Node/CLI package.
+const FRONTEND_FRAMEWORK_DEPS: &[&str] = &[
+    "react",
+    "react-dom",
+    "vue",
+    "svelte",
+    "@angular/core",
+    "next",
+    "nuxt",
+    "solid-js",
+    "preact",
+    "@remix-run/react",
+];
+
+/// Directory names to skip while walking for `package.json` files.
+const FRONTEND_SCAN_SKIP_DIRS: &[&str] =
+    &["node_modules", ".git", "target", "vendor", "dist", "build"];
+
+/// True when the repo contains a `package.json` whose dependencies include a
+/// recognised frontend UI framework, searched up to three directories deep
+/// (covers monorepo layouts like `apps/web/package.json`).
+///
+/// Used only to decide whether `check_base_md`'s greenfield finding should
+/// also propose the vertical-slice template alongside the hexagonal one —
+/// false negatives just mean the finding is backend-only, not a correctness
+/// bug, so this stays a simple heuristic rather than a full dependency graph
+/// walk.
+fn detect_frontend(repo_path: &Path) -> bool {
+    fn scan(dir: &Path, depth: u32) -> bool {
+        if depth == 0 {
+            return false;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        let mut subdirs = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.file_name().is_some_and(|n| n == "package.json") {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                        let has_dep = ["dependencies", "devDependencies"].iter().any(|key| {
+                            json.get(key)
+                                .and_then(|v| v.as_object())
+                                .is_some_and(|deps| {
+                                    FRONTEND_FRAMEWORK_DEPS
+                                        .iter()
+                                        .any(|dep| deps.contains_key(*dep))
+                                })
+                        });
+                        if has_dep {
+                            return true;
+                        }
+                    }
+                }
+            } else if path.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !FRONTEND_SCAN_SKIP_DIRS.contains(&name) && !name.starts_with('.') {
+                    subdirs.push(path);
+                }
+            }
+        }
+        subdirs.iter().any(|d| scan(d, depth - 1))
+    }
+
+    scan(repo_path, 3)
+}
+
 /// Check that `.claude/base.md` exists and has recognisable structure.
 ///
 /// When the file is absent or has no `## ` headings, emits one `Architecture`
 /// finding whose body embeds the hexagonal (ports & adapters) template as the
-/// recommended starting point.  Authors who want a different pattern write
-/// their own base.md; absent that, hex is the standing convention.
+/// recommended starting point for backends/services, plus — when a frontend
+/// framework is detected — a feature-based/vertical-slice template for it.
+/// Authors who want a different pattern write their own base.md; absent
+/// that, these are the standing conventions.
 pub fn check_base_md(repo_path: &Path) -> Vec<Finding> {
     let base_path = repo_path.join(".claude").join("base.md");
 
@@ -600,6 +671,36 @@ pub fn check_base_md(repo_path: &Path) -> Vec<Finding> {
             "`{}` exists but has no `## ` section headings",
             base_path.display()
         )
+    };
+
+    let frontend_template = if detect_frontend(repo_path) {
+        "\n\
+         A frontend framework was also detected in this repo. For the frontend, prefer a \
+         feature-based/vertical-slice template instead of hexagonal:\n\n\
+         ```markdown\n\
+         ## Pattern (frontend)\n\
+         \n\
+         Feature-based / vertical-slice. Organize by feature or route, not by technical\n\
+         layer — no repo-wide components/, hooks/, services/ dumping grounds. Each slice\n\
+         owns its own components, state, and API calls.\n\
+         \n\
+         ## Arms (frontend)\n\
+         \n\
+         List your feature slices here, e.g.:\n\
+         - `features/<feature-a>`\n\
+         - `features/<feature-b>`\n\
+         \n\
+         ## Rules (frontend)\n\
+         \n\
+         1. A slice may not import another slice's internals — only its public exports.\n\
+         2. Cross-cutting concerns (design system primitives, auth/session context, the\n\
+            routing shell) live outside any slice, not duplicated into one.\n\
+         3. Collaborators (API clients, storage, external services) are injected at a\n\
+            slice's boundary (props, context/providers, a DI container), not imported and\n\
+            constructed ad hoc inside slice logic — this is what keeps slices unit-testable.\n\
+         ```\n\n"
+    } else {
+        ""
     };
 
     vec![Finding {
@@ -635,11 +736,16 @@ pub fn check_base_md(repo_path: &Path) -> Vec<Finding> {
              4. Core has no I/O.\n\
              5. Mocks belong in the adapters crate, not in per-crate test modules.\n\
              6. One trait per port.\n\
+             7. Ports are injected into use cases at the composition root (the binary), never\n\
+                constructed ad hoc inside use-case code — this is what keeps use cases\n\
+                unit-testable against mocks.\n\
              ```\n\
              \n\
-             Override the **Pattern** section with your repo's actual architectural pattern; \
-             the architect skill reads it at runtime and audits against whatever rules the \
-             file declares. Absent a custom base.md, hexagonal is the standing default.\n\n\
+             {frontend_template}\
+             Override the **Pattern** section(s) with your repo's actual architectural \
+             pattern; the architect skill reads it at runtime and audits against whatever \
+             rules the file declares. Absent a custom base.md, these are the standing \
+             defaults.\n\n\
              ## Acceptance criteria\n\n\
              - [ ] Create `.claude/base.md` with **Pattern**, **Arms**, and **Rules** sections.\n\
              - [ ] Re-run `conductr architect review` — the LLM audit now uses your rules.\n\n\
@@ -1064,6 +1170,71 @@ tokio = { version = "1", features = ["process", "rt"] }
             findings.is_empty(),
             "structured base.md should produce no findings"
         );
+    }
+
+    #[test]
+    fn check_base_md_missing_without_frontend_omits_vertical_slice() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let findings = check_base_md(dir.path());
+        assert!(!findings[0].body.contains("vertical-slice"));
+    }
+
+    #[test]
+    fn check_base_md_missing_with_frontend_proposes_vertical_slice() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let web_dir = dir.path().join("apps").join("web");
+        std::fs::create_dir_all(&web_dir).unwrap();
+        std::fs::write(
+            web_dir.join("package.json"),
+            r#"{"dependencies": {"react": "^18.0.0"}}"#,
+        )
+        .unwrap();
+        let findings = check_base_md(dir.path());
+        assert!(findings[0].body.contains("vertical-slice"));
+        assert!(findings[0].body.contains("Pattern (frontend)"));
+    }
+
+    // ── detect_frontend ──────────────────────────────────────────────────────
+
+    #[test]
+    fn detect_frontend_false_when_no_package_json() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(!detect_frontend(dir.path()));
+    }
+
+    #[test]
+    fn detect_frontend_false_for_non_ui_package_json() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"dependencies": {"eslint": "^9.0.0"}}"#,
+        )
+        .unwrap();
+        assert!(!detect_frontend(dir.path()));
+    }
+
+    #[test]
+    fn detect_frontend_true_for_react_dependency() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"dependencies": {"react": "^18.0.0"}}"#,
+        )
+        .unwrap();
+        assert!(detect_frontend(dir.path()));
+    }
+
+    #[test]
+    fn detect_frontend_skips_node_modules() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join("node_modules").join("some-pkg");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            nested.join("package.json"),
+            r#"{"dependencies": {"react": "^18.0.0"}}"#,
+        )
+        .unwrap();
+        assert!(!detect_frontend(dir.path()));
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

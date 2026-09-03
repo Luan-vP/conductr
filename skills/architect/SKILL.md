@@ -39,15 +39,51 @@ The CLI form opens or reuses the `conductr-architect` tmux session, starts Claud
 4. **Review** PRs for architectural coherence with the ARNs
 5. **Update** ARNs when implementations reveal new constraints
 
+## Preferred Architecture Patterns
+
+Absent a repo's own declared pattern in `.claude/base.md` — and as the
+default position even when auditing an existing pattern that's silent or
+generic on a point — the architect holds a strong, standing opinion:
+
+- **Backends and services: strict hexagonal (ports & adapters), in
+  almost all cases.** Use-case code depends only on a core of types and
+  port traits/interfaces; concrete adapters implement ports and are
+  wired together only at the composition root. This is the default, not
+  one option among several — require a stated reason in the ARN's Open
+  Questions before deviating from it.
+- **Frontends: feature-based / vertical-slice.** Organize by
+  feature/route, not by technical layer — no repo-wide `components/`,
+  `hooks/`, `services/` dumping grounds. Each slice owns its components,
+  state, and API calls; only genuinely cross-cutting concerns (design
+  system primitives, auth/session context, the routing shell) live
+  outside a slice.
+- **Dependency injection everywhere, strictly.** Every arm/slice/module
+  obtains its collaborators (adapters, services, clients) through
+  injection at its boundary rather than constructing or reaching for
+  them internally — no ambient singletons, no directly-imported
+  concrete implementations reached for mid-function. Use whatever DI
+  mechanism best fits the product and its language (constructor
+  injection, a DI container/framework, factory functions passed down,
+  React context/providers for a frontend slice, etc.) — the mechanism is
+  flexible, the discipline is not. This is what makes ports swappable
+  for mocks and makes high test coverage achievable without hitting real
+  infrastructure; treat a component that can't be unit-tested without
+  standing up a real dependency as an architecture violation, not a
+  testing gap.
+
+The reasoning: a clear, well-known pattern — consistently applied — is
+what makes it possible to control autonomous agents at a distance.
+Ambiguity here is what causes drift, not a lack of cleverness.
+
 ## Workspace-wide audit (`/architect review`)
 
 When invoked without a target, run a full workspace audit:
 
 1. **Check CLI/skill parity** — verify every `conductr <cmd>` has a corresponding `skills/<cmd>/SKILL.md` whose `cli:` frontmatter field matches the CLI signature, and vice-versa. Emit a `Finding` for each mismatch. Skip this check on repos without a `skills/` surface — it is a no-op, not an error.
 
-2. **Load architectural pattern from `.claude/base.md`** — read the **Pattern**, **Rules**, and **Arms** sections. Audit the workspace against whatever rules the file declares. The audit logic is the same regardless of pattern (hexagonal, layered SPA, mobile monolith, etc.); only the rule set changes.
+2. **Load architectural pattern from `.claude/base.md`** — read the **Pattern**, **Rules**, and **Arms** sections. Audit the workspace against whatever rules the file declares. The audit logic is the same regardless of pattern (hexagonal, layered SPA, mobile monolith, etc.); only the rule set changes. Where the file is silent or generic on a point, fall back to **Preferred Architecture Patterns** above rather than inventing something new.
 
-   **Greenfield / missing base.md:** If `.claude/base.md` is absent or has no `## ` section headings, the CLI has already emitted an `Architecture` finding (via `check_base_md`) proposing the hexagonal template. In this case, run the audit against the hexagonal defaults embedded in that finding body. Do not skip — produce findings that are useful from day one even before the author writes their own base.md.
+   **Greenfield / missing base.md:** If `.claude/base.md` is absent or has no `## ` section headings, the CLI has already emitted an `Architecture` finding (via `check_base_md`) proposing the hexagonal template (and, when a frontend is detected, a vertical-slice template alongside it). In this case, run the audit against the defaults embedded in that finding body. Do not skip — produce findings that are useful from day one even before the author writes their own base.md.
 
 3. **Emit findings** for the caller (e.g. `idle`) to file as issues.
 
@@ -181,6 +217,7 @@ Structured guidance for the implementing agent:
 - Performance constraints
 - Things the implementing agent might be tempted to do but shouldn't
 - Prefer lean implementations — avoid unnecessary backward-compatibility shims, feature flags, or abstraction layers unless there is a concrete, immediate need
+- **Escalate on architectural conflict.** If implementing this issue as scoped would require violating hexagonal boundaries (a use-case reaching into a concrete adapter), vertical-slice boundaries (a frontend slice importing another slice's internals), the dependency-injection discipline (constructing a collaborator directly instead of receiving it at the boundary), or any other rule in `.claude/base.md`, stop and comment on the issue with the conflict and a proposed alternative. Do not silently bend the pattern to make the ticket easier.
 
 ### Testing Strategy
 - What to test
