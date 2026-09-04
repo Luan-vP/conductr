@@ -1,0 +1,76 @@
+name: Orchestrate (scheduled)
+
+# Runs `/orchestrate` in auto-mode: 8pm, then every 4h through 8am.
+#
+# Cron is always UTC and GitHub Actions has no timezone-aware schedule, so
+# these hours are pinned to Europe/London standard time (GMT, UTC+0) per
+# [calendar].time_zone in .conductr. During BST (roughly late Mar-late Oct,
+# UTC+1) these fire about an hour earlier than 8pm/12am/4am/8am local time —
+# acceptable drift for a maintenance cadence, not worth a timezone-conversion
+# step. Minute is offset from :00 to avoid GitHub's own top-of-hour scheduler
+# load.
+on:
+  schedule:
+    - cron: "3 20,0,4,8 * * *"
+  workflow_dispatch: {} # manual trigger for testing
+
+jobs:
+  check-running:
+    # Skip this fire entirely if another orchestrate run is already active,
+    # rather than queuing behind it (which `concurrency:` would do).
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Check for an in-progress orchestrate run
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          other=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow "${{ github.workflow }}" \
+            --json databaseId,status \
+            --jq "[.[] | select(.status == \"in_progress\" or .status == \"queued\") | select(.databaseId != ${{ github.run_id }})] | length")
+          if [ "$other" -gt 0 ]; then
+            echo "Another orchestrate run is already active ($other) — skipping this fire."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  orchestrate:
+    needs: check-running
+    if: needs.check-running.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180 # stay well under the next 4h fire
+    permissions:
+      contents: write # merge PRs, checkout/pull develop after merging
+      pull-requests: write # see, comment on, and merge PRs
+      issues: write # comment on and open (followup) issues
+      id-token: write
+      actions: read # read CI results on PRs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run orchestrate
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          # Lets Claude read CI results on PRs (see skills/orchestrate/SKILL.md).
+          additional_permissions: |
+            actions: read
+
+          prompt: |
+            Follow the instructions in skills/orchestrate/SKILL.md exactly.
+            Run in auto-mode (no arguments): survey open issues and PRs, trigger
+            unblocked issues, review and merge ready PRs, and repeat until the
+            cycle stalls (nothing to trigger, nothing to merge, everything
+            waiting) or only blocked/human-labeled issues remain. Report a
+            summary of what happened as the final output.
