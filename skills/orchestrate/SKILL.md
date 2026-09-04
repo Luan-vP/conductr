@@ -8,6 +8,23 @@ cli: conductr orchestrate --repo <owner/repo> [--dry-run] [--once] [--poll-secs 
 
 Manage GitHub issue implementation by delegating to the Claude GitHub Action bot, monitoring PRs, and merging in dependency order.
 
+## Standalone by design
+
+This skill is fully self-contained — it only needs `gh` and a GitHub repo with
+the Claude GitHub Action installed. It opportunistically uses two companion
+skills if they happen to be available in the current session, but never
+requires them:
+
+- **`architect`** — for the Architecture Pass (ARN generation). If not
+  available, orchestrate proceeds without ARNs; implementing agents get less
+  architectural guidance, but the orchestration loop itself is unaffected.
+- **`sync`** — for Calendar Sync after each cycle. If not available (or if
+  Google Calendar MCP tools aren't configured), this step is skipped
+  silently.
+
+Before invoking either, check whether it's in the current skill listing —
+don't assume it exists just because it's mentioned below.
+
 ## Input
 
 `$ARGUMENTS` — optional. Three modes:
@@ -16,7 +33,9 @@ Manage GitHub issue implementation by delegating to the Claude GitHub Action bot
 - **Issue numbers** (`/orchestrate 20 21 22`) — process a specific batch in dependency order
 - **Label** (`/orchestrate --label ready-to-implement`) — process all open issues with that label
 
-Add `--no-architect` to skip the architecture pass.
+Add `--no-architect` to skip the architecture pass explicitly. It's skipped
+automatically anyway if the `architect` skill/agent isn't available in this
+session.
 
 ## Determining the human assignee
 
@@ -128,7 +147,7 @@ For each ready non-human issue, apply `runner_for(issue)`:
 - `runner = web` → `gh issue comment <N> --body "@claude please implement"`
 - `runner = tmux` → `conductr run-task --issue <N>`
 
-If there are more than 3 unblocked issues and no ARNs exist yet, run the architect agent first (see Architecture Pass below).
+If there are more than 3 unblocked issues, no ARNs exist yet, and the `architect` skill/agent is available in this session, run it first (see Architecture Pass below). Otherwise proceed directly.
 
 **Then, wait and poll** — check every 60 seconds for new PRs from triggered issues. As PRs appear:
 - Wait for CI
@@ -154,7 +173,7 @@ Human action needed: #E — <title> [human] (assigned to @<resolved-assignee>)
 Next cycle will start when PRs arrive.
 ```
 
-After reporting each cycle, run the calendar sync (see § Calendar Sync below).
+After reporting each cycle, run the calendar sync if available (see § Calendar Sync below).
 
 ### Mode B: Explicit issue list
 
@@ -169,15 +188,15 @@ gh issue list --label "<label>" --state open --json number,title
 
 List the issues and proceed.
 
-#### B2. Architecture pass (recommended)
+#### B2. Architecture pass (optional, recommended when available)
 
-Before triggering any implementation, invoke the **architect** agent to generate Architecture Reference Notes (ARNs) for all issues in the batch:
+If the `architect` skill/agent is available in this session, invoke it before triggering any implementation to generate Architecture Reference Notes (ARNs) for all issues in the batch:
 
 ```
 Use the architect agent to analyze the batch of issues and generate ARNs
 ```
 
-The architect will read all issue bodies, explore the codebase, build the dependency graph, and comment an ARN on each issue. Skip with `--no-architect`.
+The architect will read all issue bodies, explore the codebase, build the dependency graph, and comment an ARN on each issue. Skip with `--no-architect`, or automatically if `architect` isn't available — orchestration proceeds to B3 either way.
 
 #### B3. Build dependency graph
 
@@ -297,7 +316,7 @@ Human action needed:
 4/4 issues completed in 3 batches (1 issue awaiting human action)
 ```
 
-After reporting, run the calendar sync (see § Calendar Sync below).
+After reporting, run the calendar sync if available (see § Calendar Sync below).
 
 ## Error Handling
 
@@ -308,17 +327,15 @@ After reporting, run the calendar sync (see § Calendar Sync below).
 - **Bot doesn't respond** — after 10 minutes with no PR or comment, check `gh run list --workflow claude.yml`. Report the workflow status.
 - **Cycle stall** — if no progress is made in a full cycle (nothing to trigger, nothing to merge, everything waiting), report the stall and ask the user what to do.
 
-## Calendar Sync
+## Calendar Sync (optional)
 
-After every orchestrate run — at the end of each auto-mode cycle (A4) and at the end of a batch run (B5) — invoke the `sync` skill:
+If the `sync` skill is available in this session, invoke it at the end of each auto-mode cycle (A4) and at the end of a batch run (B5):
 
 ```
 Use the sync skill to reconcile the calendar
 ```
 
-This places or updates decision slots for all open `human`-labeled issues and removes slots for issues that have been closed or re-labeled. It is a fire-and-forget step: if the Google Calendar MCP tools are unavailable, report the failure and continue — it does not block orchestration.
-
-This hook exists until `conductr sync` is scheduled as a standalone Rust cron subcommand. Once that is in place, remove this step.
+This places or updates decision slots for all open `human`-labeled issues and removes slots for issues that have been closed or re-labeled. It is a fire-and-forget step: if `sync` isn't available, or the Google Calendar MCP tools it needs aren't configured, skip it silently — it never blocks orchestration.
 
 ## Important
 

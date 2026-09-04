@@ -1,0 +1,13 @@
+{
+  "name": "conductr",
+  "owner": { "name": "Luan van Pletsen", "email": "luanvanpletsen@gmail.com" },
+  "description": "Claude Code plugins from the conductr project.",
+  "plugins": [
+    {
+      "name": "orchestrate",
+      "source": "./plugins/orchestrate",
+      "description": "Autonomous GitHub issue orchestration for the Claude GitHub Action bot.",
+      "version": "0.1.0"
+    }
+  ]
+}
