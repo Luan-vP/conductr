@@ -1,0 +1,11 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "orchestrate",
+  "version": "0.1.0",
+  "description": "Autonomous GitHub issue orchestration: finds unblocked issues, triggers the Claude GitHub Action bot in parallel, reviews CI and merges in dependency order. Standalone — only needs gh and a repo with the Claude GitHub Action installed.",
+  "author": { "name": "Luan van Pletsen", "email": "luanvanpletsen@gmail.com" },
+  "homepage": "https://github.com/Luan-vP/conductr",
+  "repository": "https://github.com/Luan-vP/conductr",
+  "license": "MIT",
+  "keywords": ["github", "orchestration", "issues", "pull-requests", "automation"]
+}
